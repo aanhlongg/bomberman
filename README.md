@@ -9,5 +9,5 @@ uv run evaluate.py --agent agent_pgk --n-rounds 400 --scenario coin-heaven --sho
 ```
 ```bash
 # test the initial coin-collector-agent in coin heaven 
-uv run main.py play --my-agent agent_pgk --scenario coin-heaven
+uv run main.py play --agent agent_pgk --scenario coin-heaven
 ```
