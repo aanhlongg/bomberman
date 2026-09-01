@@ -2,15 +2,16 @@ import os
 import pickle
 import random
 from collections import deque
+
 import numpy as np
 
-ACTIONS = ['UP', 'RIGHT', 'DOWN', 'LEFT', 'WAIT', 'BOMB']
+ACTIONS = ["UP", "RIGHT", "DOWN", "LEFT", "WAIT", "BOMB"]
 
 DIRECTION_VECTORS = {
-    'UP': (0, -1),
-    'RIGHT': (1, 0),
-    'DOWN': (0, 1),
-    'LEFT': (-1, 0),
+    "UP": (0, -1),
+    "RIGHT": (1, 0),
+    "DOWN": (0, 1),
+    "LEFT": (-1, 0),
 }
 VECTOR_TO_INDEX = {v: i for i, v in enumerate(DIRECTION_VECTORS.values())}
 
@@ -18,6 +19,7 @@ FEATURE_DIM = 10  # 4 (coin direction) + 4 (walkable) + 1 (bias) + 1 (distance)
 
 
 def setup(self):
+    model_path = os.path.join(os.path.dirname(__file__), "my-saved-model.pt")
     if os.path.isfile("my-saved-model.pt"):
         self.logger.info("Loading model from saved state.")
         with open("my-saved-model.pt", "rb") as file:
@@ -34,13 +36,13 @@ def act(self, game_state: dict) -> str:
     # Valid move mask: check walkability from features[4:8]
     valid_mask = np.ones(len(ACTIONS), dtype=bool)
     valid_mask[:4] = features[4:8] == 1.0  # UP, RIGHT, DOWN, LEFT
-    valid_mask[4] = True                   # WAIT always allowed
-    valid_mask[5] = False                  # BOMB disabled for coin collector
+    valid_mask[4] = False  # WAIT always allowed
+    valid_mask[5] = False  # BOMB disabled for coin collector
 
     # Dynamic Epsilon decay
     if self.train:
-        ep = getattr(self, 'episode_num', 1)
-        epsilon = max(0.05, 0.5 * (0.99 ** ep))
+        ep = getattr(self, "episode_num", 1)
+        epsilon = max(0.05, 0.5 * (0.99**ep))
     else:
         epsilon = 0.0
 
@@ -56,7 +58,7 @@ def act(self, game_state: dict) -> str:
     # Pick best action among valid ones
     max_q = np.max(q_values)
     best_actions = np.where(q_values == max_q)[0]
-    
+
     return ACTIONS[np.random.choice(best_actions)]
 
 
@@ -97,9 +99,9 @@ def state_to_features(game_state: dict) -> np.array:
     if game_state is None:
         return None
 
-    field = game_state['field']
-    _, _, _, (x, y) = game_state['self']
-    coins = game_state['coins']
+    field = game_state["field"]
+    _, _, _, (x, y) = game_state["self"]
+    coins = game_state["coins"]
 
     # 1. Direction indicator from BFS (4 dims)
     coin_features = np.zeros(4)
@@ -126,4 +128,6 @@ def state_to_features(game_state: dict) -> np.array:
 
     bias_feature = np.array([1.0])
 
-    return np.concatenate([coin_features, walkable_features, dist_feature, bias_feature])
+    return np.concatenate(
+        [coin_features, walkable_features, dist_feature, bias_feature]
+    )

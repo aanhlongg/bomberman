@@ -1,18 +1,19 @@
 import os
 import pickle
-from collections import namedtuple, deque
-from typing import List
 import random
-import numpy as np
+from collections import deque, namedtuple
+from typing import List
 
 import events as e
+import numpy as np
+
 from .callbacks import ACTIONS, DIRECTION_VECTORS, state_to_features
 
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+Transition = namedtuple("Transition", ("state", "action", "next_state", "reward"))
 
 TRANSITION_HISTORY_SIZE = 10000
-ALPHA = 0.05       # Stable learning rate
-GAMMA = 0.95       # High discount factor for pathing
+ALPHA = 0.05  # Stable learning rate
+GAMMA = 0.95  # High discount factor for pathing
 REPLAY_BATCH_SIZE = 32
 REPLAY_EVERY_N_STEPS = 5
 REPLAY_ALPHA = 0.01
@@ -34,7 +35,13 @@ def setup_training(self):
             self.episode_num = sum(1 for _ in f)
 
 
-def game_events_occurred(self, old_game_state: dict, self_action: str, new_game_state: dict, events: List[str]):
+def game_events_occurred(
+    self,
+    old_game_state: dict,
+    self_action: str,
+    new_game_state: dict,
+    events: List[str],
+):
     old_features = state_to_features(old_game_state)
     new_features = state_to_features(new_game_state)
 
@@ -60,7 +67,7 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
     with open("my-saved-model.pt", "wb") as file:
         pickle.dump(self.model, file)
 
-    _, score, _, _ = last_game_state['self']
+    _, score, _, _ = last_game_state["self"]
     with open("training_stats.csv", "a") as f:
         f.write(f"{self.episode_num},{score},{last_game_state['step']}\n")
     self.episode_num += 1
@@ -76,7 +83,9 @@ def _add_movement_shaping_events(features: np.array, action: str, events: List[s
         events.append(MOVED_AWAY_FROM_COIN)
 
 
-def _update_q(self, features: np.array, action: str, reward: float, next_features: np.array):
+def _update_q(
+    self, features: np.array, action: str, reward: float, next_features: np.array
+):
     if features is None or action is None:
         return
 
@@ -116,7 +125,7 @@ def reward_from_events(self, events: List[str]) -> float:
     game_rewards = {
         e.COIN_COLLECTED: 2.0,
         e.INVALID_ACTION: -0.2,
-        e.WAITED: -0.1,
+        e.WAITED: -0.2,
         MOVED_TOWARDS_COIN: 0.2,
         MOVED_AWAY_FROM_COIN: -0.2,
     }
