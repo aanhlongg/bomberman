@@ -30,6 +30,18 @@ assert len(DIRECTION_VECTORS) == 4, (
     "changes, the valid_next_mask logic in _update_q must be updated too."
 )
 
+def _valid_action_mask(features: np.array) -> np.array:
+    """
+    Returns a boolean mask over ACTIONS indicating which actions are valid
+    from this state: movement actions require the corresponding tile to be
+    walkable, WAIT is always valid, and BOMB is disabled entirely for this
+    task (no crates/bombs needed to collect coins).
+    """
+    mask = np.ones(len(ACTIONS), dtype=bool)
+    mask[:4] = features[4:8] == 1.0   # UP, RIGHT, DOWN, LEFT
+    mask[4] = True                     # WAIT always allowed
+    mask[5] = False                    # BOMB disabled for this task
+    return mask
 
 def setup_training(self):
     """
@@ -77,8 +89,6 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
     _replay_batch(self)
 
     # Store the model
-
-    # Store the model
     with open("my-saved-model.pt", "wb") as file:
         pickle.dump(self.model, file)
 
@@ -110,10 +120,7 @@ def _update_q(self, features: np.array, action: str, reward: float, next_feature
     q_current = self.model[action_idx] @ features
 
     if next_features is not None:
-        # Mask non-walkable next steps when computing max Q(s', a')
-        valid_next_mask = np.ones(len(ACTIONS), dtype=bool)
-        valid_next_mask[:4] = next_features[4:8] == 1.0
-        
+        valid_next_mask = _valid_action_mask(next_features)
         q_next = self.model @ next_features
         q_next_masked = np.where(valid_next_mask, q_next, -np.inf)
         q_next_max = np.max(q_next_masked)
@@ -150,8 +157,7 @@ def _replay_batch(self):
         q_current = self.model[action_idx] @ t.state
 
         if t.next_state is not None:
-            valid_next_mask = np.ones(len(ACTIONS), dtype=bool)
-            valid_next_mask[:4] = t.next_state[4:8] == 1.0
+            valid_next_mask = _valid_action_mask(t.next_state)
             q_next = self.model @ t.next_state
             q_next_masked = np.where(valid_next_mask, q_next, -np.inf)
             q_next_max = np.max(q_next_masked)
