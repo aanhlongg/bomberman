@@ -20,46 +20,74 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
+# -----------------------------------------------------------------------------------
+# GAME EXECUTION SUBPROCESS HANDLER
+# -----------------------------------------------------------------------------------
+
 def run_game(n_rounds: int, scenario: str, agent: str, eval_mode: bool, opponents: list, tag: str):
+    """
+    Launches `main.py` in a headless CLI subprocess to run the specified number of 
+    episodes, passing environment variables to signal evaluation mode and model tags.
+    """
+    # Construct command-line argument list for main.py
     cmd = [
         sys.executable, "main.py", "play",
-        "--no-gui",
-        "--agents", agent, *opponents,
-        "--train", "1",
-        "--scenario", scenario,
+        "--no-gui",                         # Fast headless mode without rendering Pygame window
+        "--agents", agent, *opponents,      # Main agent plus any active opponent agents
+        "--train", "1",                     # Enable training loop callbacks
+        "--scenario", scenario,             # Map scenario (e.g., 'coin-heaven')
         "--n-rounds", str(n_rounds),
     ]
+
+    # Inherit current OS environment and inject runtime flags
     env = os.environ.copy()
     if eval_mode:
-        env["EVAL_MODE"] = "1"
+        env["EVAL_MODE"] = "1"      # Forces epsilon=0 (purely greedy) and disables weight updates
     if tag:
-        env["MODEL_TAG"] = tag
+        env["MODEL_TAG"] = tag      # Prevents overwriting baseline model/stats files
+
     print(f"Running: {' '.join(cmd)}"
           + (" [EVAL_MODE=1]" if eval_mode else "")
           + (f" [MODEL_TAG={tag}]" if tag else ""))
+
+    # Execute main.py synchronously and capture return status
     result = subprocess.run(cmd, env=env)
     if result.returncode != 0:
         print(f"Warning: main.py exited with code {result.returncode}", file=sys.stderr)
 
 
+# -----------------------------------------------------------------------------------
+# METRICS & PLOTTING UTILITY
+# -----------------------------------------------------------------------------------
+
 def plot_stats(stats_path: str, rolling_window: int, out_path: str, show: bool, eval_mode: bool):
+    """
+    Reads episode statistics from CSV, calculates rolling averages for scores and steps,
+    generates a 2-panel plot using matplotlib, and prints summary stats to standard output.
+    """
+    # Validate CSV file existence
     if not os.path.isfile(stats_path):
         print(f"No {stats_path} found -- nothing to plot.", file=sys.stderr)
         sys.exit(1)
 
+    # Load dataset into Pandas DataFrame
     df = pd.read_csv(stats_path)
     if df.empty:
         print(f"{stats_path} is empty -- nothing to plot.", file=sys.stderr)
         sys.exit(1)
 
+    # Compute rolling mean over a moving window to smooth out per-episode variance
     df["score_rolling"] = df["score"].rolling(rolling_window, min_periods=1).mean()
     df["steps_rolling"] = df["steps"].rolling(rolling_window, min_periods=1).mean()
 
+    # Dynamic dynamic figure labels based on run mode
     label = "test episode" if eval_mode else "episode (round)"
     subtitle = "Evaluation (fixed policy, no learning)" if eval_mode else "Training"
 
+    # Set up 2x1 stacked subplots sharing the horizontal X-axis
     fig, axes = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
 
+    # Top Plot: Episode Scores
     axes[0].plot(df["round"], df["score"], alpha=0.25, color="tab:blue", label="raw")
     axes[0].plot(df["round"], df["score_rolling"], color="tab:blue",
                  label=f"rolling mean (window={rolling_window})")
@@ -68,6 +96,7 @@ def plot_stats(stats_path: str, rolling_window: int, out_path: str, show: bool, 
     axes[0].legend()
     axes[0].grid(alpha=0.3)
 
+    # Bottom Plot: Episode Steps (Efficiency)
     axes[1].plot(df["round"], df["steps"], alpha=0.25, color="tab:orange", label="raw")
     axes[1].plot(df["round"], df["steps_rolling"], color="tab:orange",
                  label=f"rolling mean (window={rolling_window})")
@@ -77,19 +106,31 @@ def plot_stats(stats_path: str, rolling_window: int, out_path: str, show: bool, 
     axes[1].legend()
     axes[1].grid(alpha=0.3)
 
+    # Adjust layout padding and save high-resolution figure
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
+
+    # Output aggregate metrics to console
     print(f"Saved plot to {out_path}")
     print(f"\nSummary over {len(df)} episodes:")
     print(f"  Mean score:  {df['score'].mean():.3f}  (std: {df['score'].std():.3f}, "
           f"min: {df['score'].min()}, max: {df['score'].max()})")
     print(f"  Mean steps:  {df['steps'].mean():.1f}  (std: {df['steps'].std():.1f})")
 
+    # Optionally launch interactive plot viewer window
     if show:
         plt.show()
 
 
+# -----------------------------------------------------------------------------------
+# MAIN CLI ENTRY POINT
+# -----------------------------------------------------------------------------------
+
 def main():
+    """
+    Parses CLI flags, determines target log paths, handles cleanup if requested,
+    executes the game runner subprocess, and triggers plotting routines.
+    """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--n-rounds", type=int, default=200, help="Number of episodes to run")
     parser.add_argument("--scenario", type=str, default="coin-heaven", help="Scenario to run on")
@@ -114,6 +155,7 @@ def main():
     parser.add_argument("--show", action="store_true", help="Also open the plot in an interactive window")
     args = parser.parse_args()
 
+    # Determine file paths based on agent directory, evaluation mode, and optional model tag
     stats_dir = args.stats_dir or os.path.join("agent_code", args.agent)
     kind = "test" if args.eval else "training"
     stats_filename = f"{kind}_stats{'_' + args.tag if args.tag else ''}.csv"
@@ -121,13 +163,16 @@ def main():
     default_out = f"{'test' if args.eval else 'learning'}_curve{'_' + args.tag if args.tag else ''}.png"
     out_path = args.out or default_out
 
+    # Delete existing stats CSV if --fresh flag is passed
     if args.fresh and os.path.isfile(stats_path):
         os.remove(stats_path)
         print(f"Removed old {stats_path}")
 
+    # Step 1: Run the simulation via main.py (unless --skip-run is passed)
     if not args.skip_run:
         run_game(args.n_rounds, args.scenario, args.agent, args.eval, args.opponents, args.tag)
 
+    # Step 2: Parse recorded CSV stats and save visual plot
     plot_stats(stats_path, args.rolling_window, out_path, args.show, args.eval)
 
 
