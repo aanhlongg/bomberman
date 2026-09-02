@@ -1,11 +1,11 @@
 # Commands:
 ```bash
-# train the initial coin-collector-agent in coin-heaven
-uv run main.py play --no-gui --agents agent_pgk --train 1 --scenario coin-heaven --n-rounds 400
+# The initial coin-collector-agent "agent_pgk" got trained in coin-heaven using the following command 
+uv run main.py play --no-gui --agents agent_pgk rule_based_agent --train 1 --scenario coin-heaven --n-rounds 1000
 ```
 ```bash
-# train, evaluate the initial coin-collector-agent in coin heaven and display the evaluation plot
-uv run evaluate.py --agent agent_pgk --n-rounds 400 --scenario coin-heaven --show
+# This command runs a specified number of simulations (here 300) of test-rounds and plots them
+uv run evaluate.py --agent agent_pgk --eval --n-rounds 300 --scenario coin-heaven --show
 ```
 ```bash
 # test the initial coin-collector-agent in coin heaven 
