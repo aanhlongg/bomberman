@@ -156,3 +156,18 @@ def coin_potential(state):
         return -distance
     else:
         return 0.0
+
+
+def q_values(weights, state):
+    """
+    computes q values for every action: Q(s,a) = weights * feature_vector
+    """
+    values = np.zeros(len(ACTIONS))
+
+    if state is None:
+        return values
+
+    for i, action in enumerate(ACTIONS):
+        values[i] = np.dot(weights, state_action_features(state, action))
+
+    return values

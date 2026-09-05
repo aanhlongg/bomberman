@@ -3,11 +3,13 @@ from collections import deque, namedtuple
 from typing import List
 
 import events as e
+import numpy as np
 
 from .features import (
     ACTIONS,
     N_FEATURES,
     coin_potential,
+    q_values,
     state_action_features,
     state_features,
 )
@@ -19,6 +21,7 @@ Transition = namedtuple("Transition", ("state", "action", "next_state", "reward"
 TRANSITION_HISTORY_SIZE = 3  # keep only ... last transitions
 RECORD_ENEMY_TRANSITIONS = 1.0  # record enemy transitions with probability ...
 GAMMA = 0.95  # discount factor
+ALPHA = 0.01  # learning rate
 
 
 def setup_training(self):
@@ -69,7 +72,10 @@ def game_events_occurred(
     # (s, a, r, s')
     self.transitions.append(Transition(old_state, self_action, new_state, reward))
 
-    # TODO: compute TD target
+    # td target = reward + gamma * max(Q(s',a')) (highest q value in next state)
+    next_value = np.max(q_values(self.weights, new_state))
+    td_target = reward + GAMMA * next_value
+    sgd_update(self, old_state, self_action, td_target)
 
 
 def end_of_round(self, last_game_state: dict, last_action: str, events: List[str]):
@@ -96,11 +102,24 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
     # (s, a, r, s')
     self.transitions.append(Transition(old_state, last_action, None, reward))
 
-    # TODO: compute TD target
+    # target = reward, there is no next state
+    sgd_update(self, old_state, last_action, td_target=reward)
 
     # Store the model
-    with open("my-saved-model.pt", "wb") as file:
-        pickle.dump(self.model, file)
+    with open("linear-model.pt", "wb") as file:
+        pickle.dump(self.weights, file)
+
+
+def sgd_update(self, old_state, action, td_target: float) -> None:
+    """
+    compute one gradient descent step on the squared error between
+    td target and prediction
+
+    weights = weights + alpha * (td_target - prediction) * feature_vector
+    """
+    features = state_action_features(old_state, action)
+    prediction = np.dot(self.weights, features)
+    self.weights += ALPHA * (td_target - prediction) * features
 
 
 def reward_from_events(self, events: List[str]) -> float:
