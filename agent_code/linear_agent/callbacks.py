@@ -32,6 +32,16 @@ def setup(self):
 
 
 def act(self, game_state: dict) -> str:
+    # if self.train and random.random() < epsilon:
+    #     return random.choice(ACTIONS) # explore
+
+    # features = state_features()
+    # q_values = []
+    # for a in ACTIONS:
+    #     value = state_features(features,a)
+    #     q_values.append(value)
+
+    # return ACTIONS[np.argmax(q_values)]
     """
     Your agent should parse the input, think, and take a decision.
     When not in training mode, the maximum execution time for this method is 0.5s.
