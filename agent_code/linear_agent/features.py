@@ -8,6 +8,7 @@ ACTIONS = ["UP", "RIGHT", "DOWN", "LEFT", "WAIT", "BOMB"]
 DIRECTIONS = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}
 
 N_FEATURES = 4
+GAMMA = 0.95  # discount factor
 
 
 def state_features(game_state):

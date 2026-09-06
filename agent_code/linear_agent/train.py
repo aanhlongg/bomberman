@@ -7,6 +7,7 @@ import numpy as np
 
 from .features import (
     ACTIONS,
+    GAMMA,
     N_FEATURES,
     coin_potential,
     q_values,
@@ -20,7 +21,6 @@ Transition = namedtuple("Transition", ("state", "action", "next_state", "reward"
 # Hyper parameters -- DO modify
 TRANSITION_HISTORY_SIZE = 3  # keep only ... last transitions
 RECORD_ENEMY_TRANSITIONS = 1.0  # record enemy transitions with probability ...
-GAMMA = 0.95  # discount factor
 ALPHA = 0.01  # learning rate
 
 
