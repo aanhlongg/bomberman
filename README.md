@@ -12,5 +12,6 @@ uv run main.py play --agents linear_agent --train 1 --scenario coin-heaven --no-
 
 evaluate the linear agent:
 ```bash
-uv run main.py play --agents linear_agent --scenario coin-heaven
+uv run main.py play --agents linear_agent --scenario coin-heaven # single run 
+uv run main.py play --agents linear_agent --scenario coin-heaven --no-gui --n-rounds 200 # multiple runs
 ```

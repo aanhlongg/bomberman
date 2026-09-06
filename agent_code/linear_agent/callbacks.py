@@ -15,6 +15,12 @@ from .features import (
     state_features,
 )
 
+# decaying epsilon exploration for training
+EPSILON_START = 1.0
+EPSILON_MIN = 0.05
+EPSILON_DECAY = 0.99
+
+
 def setup(self):
     """
     Setup your code. This is called once when loading each agent.
@@ -79,8 +85,8 @@ def act(self, game_state: dict) -> str:
     state = state_features(game_state)
     _log_previous_transition(self, game_state, state)
 
-    random_prob = 0.1
-    if self.train and random.random() < random_prob:
+    epsilon = _epsilon(game_state["round"]) if self.train else 0.0
+    if self.train and random.random() < epsilon:
         self.logger.debug("Choosing action purely at random.")
         # 80%: walk in any direction. 10% wait. 10% bomb.
         action = np.random.choice(ACTIONS, p=[0.2, 0.2, 0.2, 0.2, 0.1, 0.1])
@@ -118,3 +124,7 @@ def _log_previous_transition(self, game_state, state) -> None:
             *self.weights,
         ]
     )
+
+
+def _epsilon(round: int) -> float:
+    return max(EPSILON_MIN, EPSILON_START * EPSILON_DECAY ** (round))
