@@ -9,6 +9,8 @@ from .features import (
     ACTIONS,
     GAMMA,
     N_FEATURES,
+    bomb_escapable,
+    bomb_hits,
     coin_potential,
     q_values,
     state_action_features,
@@ -22,6 +24,10 @@ Transition = namedtuple("Transition", ("state", "action", "next_state", "reward"
 TRANSITION_HISTORY_SIZE = 3  # keep only ... last transitions
 RECORD_ENEMY_TRANSITIONS = 1.0  # record enemy transitions with probability ...
 ALPHA = 0.01  # learning rate
+
+# custom events
+BOMB_NO_ESCAPE = "BOMB_NO_ESCAPE"
+BOMB_NO_TARGET = "BOMB_NO_TARGET"
 
 
 def setup_training(self):
@@ -66,6 +72,7 @@ def game_events_occurred(
 
     old_state = state_features(old_game_state)
     new_state = state_features(new_game_state)
+    events = events + bad_bomb_events(old_state, events)
     reward = reward_from_events(self, events) + potential_shaping(old_state, new_state)
     self.logger.debug(f"Reward for action {self_action}: {reward}")
 
@@ -96,6 +103,7 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
     )
 
     old_state = state_features(last_game_state)
+    events = events + bad_bomb_events(old_state, events)
     reward = reward_from_events(self, events) + potential_shaping(old_state, None)
     self.logger.debug(f"Reward for action {last_action}: {reward}")
 
@@ -130,8 +138,9 @@ def reward_from_events(self, events: List[str]) -> float:
         e.COIN_COLLECTED: 1.0,
         e.WAITED: -0.05,
         e.INVALID_ACTION: -0.1,
-        e.BOMB_DROPPED: -2.0,
         e.KILLED_SELF: -5.0,
+        BOMB_NO_ESCAPE: -5.0,
+        BOMB_NO_TARGET: -2.0,
     }
     reward_sum = 0.0
     for event in events:
@@ -154,3 +163,18 @@ def potential_shaping(old_state, new_state) -> float:
         new_potential = coin_potential(new_state)
 
     return GAMMA * new_potential - old_potential
+
+
+def bad_bomb_events(old_state, events):
+    """
+    returns a custom event if a bomb can't be escaped or hasn't hit anything
+    """
+    if e.BOMB_DROPPED not in events:
+        return []
+
+    bad_events = []
+    if not bomb_escapable(old_state):
+        bad_events.append(BOMB_NO_ESCAPE)
+    if not bomb_hits(old_state):
+        bad_events.append(BOMB_NO_TARGET)
+    return bad_events

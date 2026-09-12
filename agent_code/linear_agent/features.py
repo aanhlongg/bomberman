@@ -1,6 +1,7 @@
 from collections import deque
 
 import numpy as np
+from settings import BOMB_POWER, BOMB_TIMER
 
 ACTIONS = ["UP", "RIGHT", "DOWN", "LEFT", "WAIT", "BOMB"]
 
@@ -27,16 +28,17 @@ def state_features(game_state):
     else:
         coin_distance_map = None
 
-    occupied = set()
+    others = {other[3] for other in game_state["others"]}
+
+    occupied = set(others)
     for bomb_position, _ in game_state["bombs"]:
         occupied.add(bomb_position)
-    for other in game_state["others"]:
-        occupied.add(other[3])
 
     return {
         "field": field,
         "position": game_state["self"][3],
         "bomb_available": game_state["self"][2],
+        "others": others,
         "occupied": occupied,
         "coin_distance_map": coin_distance_map,
     }
@@ -73,9 +75,9 @@ def state_action_features(state, action):
     )
 
 
-def _bfs_distance_map(field, sources):
+def _bfs_distance_map(field, sources, occupied=()):
     """
-    return distance map with multiple sources (here coins) using bfs
+    return distance map for multiple sources (e.g. coins) using bfs
     """
     distance_map = np.full(field.shape, np.inf)
     q = deque()  # double ended queue
@@ -94,6 +96,7 @@ def _bfs_distance_map(field, sources):
                 0 <= nx < field.shape[0]  # width
                 and 0 <= ny < field.shape[1]  # height
                 and field[nx, ny] == 0  # empty field
+                and (nx, ny) not in occupied  # bomb/agent positions
                 and distance_map[nx, ny] == np.inf  # untouched
             ):
                 distance_map[nx, ny] = distance_map[x, y] + 1
@@ -157,6 +160,51 @@ def coin_potential(state):
         return -distance
     else:
         return 0.0
+
+
+def blast_coordinates(field, bomb_position):
+    """
+    returns tiles hit by a bomb
+    """
+    x, y = bomb_position
+    coordinates = [(x, y)]
+
+    for dx, dy in DIRECTIONS.values():
+        for i in range(1, BOMB_POWER + 1):
+            nx, ny = x + i * dx, y + i * dy
+            if field[nx, ny] == -1:  # stone wall
+                break
+            coordinates.append((nx, ny))
+    return coordinates
+
+
+def bomb_escapable(state):
+    """
+    checks if the a bomb at current position can be outrun
+    """
+    field = state["field"]
+    position = state["position"]
+
+    # distance map from current position
+    distance_map = _bfs_distance_map(field, [position], occupied=state["occupied"])
+
+    # mark all tiles within blast, from bomb at current position
+    for tile in blast_coordinates(field, position):
+        distance_map[tile] = np.inf
+
+    return bool(np.any(distance_map <= BOMB_TIMER))
+
+
+def bomb_hits(state):
+    """
+    returns true if a dropped bomb would hit a crate or an enemy agent
+    """
+    field = state["field"]
+
+    for tile in blast_coordinates(field, state["position"]):
+        if field[tile] == 1 or tile in state["others"]:
+            return True
+    return False
 
 
 def q_values(weights, state):
