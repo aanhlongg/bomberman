@@ -112,3 +112,6 @@ screenshots/*.webm
 
 replays/
 results/
+
+# macOS
+.DS_Store

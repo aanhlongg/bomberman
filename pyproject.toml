@@ -1,7 +1,7 @@
 [project]
-name = "bomberman-rl"
+name = "bomberman"
 version = "0.1.0"
-description = "Add your description here"
+description = "Bomberman Reinforcement Learning Project"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
