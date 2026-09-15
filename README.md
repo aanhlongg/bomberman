@@ -166,6 +166,7 @@ uv run metrics/linear_agent/task3/trace_stalemates.py          # confirms the ~3
 uv run metrics/linear_agent/task3/trace_deaths.py              # general death-cause trace
 uv run metrics/linear_agent/task3/trace_deaths_phase1.py       # phase-1 (peaceful_agent) death trace
 uv run metrics/linear_agent/task3/trace_deaths_collector_v2.py # coin_collector_agent death trace
+uv run metrics/linear_agent/task3/plot_task3.py                 # renders the figures referenced in report3_body.typ
 ```
 
 **Task 4** — the `rule_based_agent` validation sweep and the traces that diagnosed the
@@ -175,6 +176,7 @@ bash metrics/linear_agent/task4/seed_sweep_rulebased.sh       # seeds 501-505, v
 uv run metrics/linear_agent/task4/trace_deaths_rulebased.py   # diagnoses the mutual-bombing self-kill mechanism
 uv run metrics/linear_agent/task4/trace_adjacent_moment.py    # inspects Q-values at the moment of bombing an adjacent opponent
 uv run metrics/linear_agent/task4/trace_cleared_board.py      # inspects Q-values once the board is fully cleared
+uv run metrics/linear_agent/task4/plot_task4.py                # renders the figures referenced in report4_body.typ
 ```
 
 Each seed sweep takes roughly 25-35 minutes per seed (5000 training rounds + a 200-round eval)
@@ -182,3 +184,35 @@ on the reference hardware described in `final_project.pdf`; the full Task 3 + Ta
 is several hours end-to-end. The death/stalemate traces are much faster (seconds to low minutes
 each), since they stop as soon as they've collected enough example rounds rather than running a
 fixed round count.
+
+`plot_task3.py` / `plot_task4.py` read exclusively from already-archived `results/archive_*`
+eval and train JSON files (produced by the sweep scripts above) — they don't retrain anything
+themselves, and a missing archive is skipped with a warning rather than raising. The one
+exception is each script's `weight_evolution.png` figure, which needs a per-step
+`training_log.csv` (the sweep scripts above don't keep this file — see the training-speed note
+under Task 2 for why). To regenerate it:
+
+```bash
+# Task 3 (coin_collector_agent, seed 401):
+AGENT_SEED=401 uv run main.py play --agents linear_agent coin_collector_agent \
+    --train 1 --scenario classic --no-gui --n-rounds 5000
+mkdir -p results/archive_task3_collector_weightevo
+cp agent_code/linear_agent/metrics/training_log.csv results/archive_task3_collector_weightevo/training_log.csv
+
+# Task 4 (rule_based_agent, seed 505):
+AGENT_SEED=505 uv run main.py play --agents linear_agent rule_based_agent \
+    --train 1 --scenario classic --no-gui --n-rounds 5000
+mkdir -p results/archive_task4_rulebased_weightevo
+cp agent_code/linear_agent/metrics/training_log.csv results/archive_task4_rulebased_weightevo/training_log.csv
+```
+
+**Important:** `--train 1` overwrites `agent_code/linear_agent/linear-model.pt` with whatever
+that run produces. Immediately after copying out `training_log.csv`, restore the shipped model
+before doing anything else, e.g. from the seed sweep archive:
+```bash
+cp results/archive_task4_rulebased_seed_sweep/seed_505/model.pt agent_code/linear_agent/linear-model.pt
+```
+Also note `AGENT_SEED` only seeds the agent's own exploration — it does not reproduce the
+original run's exact crate/coin layout (that's controlled by a separate, unused `--seed` flag),
+so a regenerated `training_log.csv` will be a qualitatively similar but not byte-identical
+training run to the one the shipped model/archived eval numbers came from.
