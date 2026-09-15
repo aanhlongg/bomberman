@@ -1,4 +1,4 @@
-# sweep.py — drop in repo root, run with: python sweep.py
+# sweep.py — run with: uv run metrics/linear_agent/task1/sweep.py
 import os
 import re
 import shutil
@@ -7,8 +7,10 @@ import sys
 from itertools import product
 from pathlib import Path
 
-AGENT_DIR = Path("agent_code/linear_agent")
-RESULTS_DIR = Path("results/linear_agent/task1")
+# self-locating: metrics/linear_agent/task1/sweep.py -> repo root is 3 levels up
+REPO_ROOT = Path(__file__).resolve().parents[3]
+AGENT_DIR = REPO_ROOT / "agent_code" / "linear_agent"
+RESULTS_DIR = REPO_ROOT / "results" / "linear_agent" / "task1"
 N_ROUNDS = 2000
 PYTHON = sys.executable
 
@@ -22,7 +24,7 @@ def patch(filepath, pattern, value):
 
 def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    repo_root = Path(__file__).parent.resolve()
+    repo_root = REPO_ROOT
 
     # Save originals so we can restore them after the sweep
     train_orig    = (AGENT_DIR / "train.py").read_text()

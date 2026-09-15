@@ -74,7 +74,11 @@ def load_eval_coins(eval_json_path: Path):
 # ── Figure 1: before/after diagnosis (commit-gap & w_crate_hit) ─────────────
 
 before_dir = Path("results/archive_decaying_alpha_50k_broken_crate_hit/checkpoints")
-after_dir = Path("agent_code/linear_agent/checkpoints")  # live: final CRATE_HIT_BONUS=5.0 50k run
+# archived (not the live agent_code/linear_agent/checkpoints/ dir -- any later
+# --train run on a different feature set silently overwrites that one, which
+# is exactly what happened to this figure's data after this session's Task 3/4
+# weight-evolution retrains): final CRATE_HIT_BONUS=5.0 50k run
+after_dir = Path("results/VALIDATED_TASK2_BASELINE/checkpoints")
 
 r_before, gap_before, crate_before = load_checkpoint_trend(before_dir)
 r_after, gap_after, crate_after = load_checkpoint_trend(after_dir)
