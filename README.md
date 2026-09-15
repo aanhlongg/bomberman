@@ -133,11 +133,25 @@ metrics/
     └── task4/                 # rule_based_agent 5-seed sweep + death/escape traces
 ```
 
-All scripts are self-locating (they resolve the repository root from their own file path, not
-from the working directory you invoke them from), so they can be run directly from a fresh
-clone. Each script writes its own `--save-stats` JSON / CSV output into `results/` (created if
-missing; gitignored, since it's regenerable and grows large) rather than overwriting anything
-tracked in git.
+Each `plot_*.py` script above writes its rendered figures into the matching `results/linear_agent/taskN/`
+folder (mirroring the `metrics/` layout 1:1; `tree_agent` will get its own sibling folder there
+too, once it has report figures of its own):
+
+```
+results/
+└── linear_agent/
+    ├── task1/   # figures referenced in report1_body.typ
+    ├── task2/   # figures referenced in report2_body.typ
+    ├── task3/   # figures referenced in report3_body.typ
+    └── task4/   # figures referenced in report4_body.typ
+```
+
+`results/` itself is gitignored (regenerable, grows large), but the `results/linear_agent/taskN/`
+figure PNGs specifically are force-added and tracked, since they're the actual images the report
+embeds. Every other script writes its own `--save-stats` JSON / CSV / raw training-log output
+elsewhere under `results/` (untracked, regenerable by rerunning), and all scripts are self-locating
+(resolving the repository root from their own file path, not the working directory you invoke them
+from) so they can be run directly from a fresh clone.
 
 **Task 1** — hyperparameter sweep behind the Task 1 heatmaps/learning curves:
 ```bash

@@ -13,7 +13,7 @@ are skipped with a warning rather than raising, so a partial results/ tree
 (e.g. after the disk-hygiene cleanup described in the report) still produces
 whatever figures it can.
 
-Produces 3 figures in results/task3/:
+Produces 3 figures in results/linear_agent/task3/:
   1. seed_sweep_consistency.png   -- kills/suicides/score across the 5 seeds
                                       (401-405) behind the final validated
                                       coin_collector_agent configuration
@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-OUT_DIR = REPO_ROOT / "results" / "task3"
+OUT_DIR = REPO_ROOT / "results" / "linear_agent" / "task3"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 SMOOTH_WIN = 100

@@ -5,8 +5,8 @@ Run from the repo root after sweep.py has finished:
 
     python plot_sweep.py
 
-Expects CSVs at:  results/sweep/log_a{alpha}_g{gamma}.csv
-Saves figures to: results/sweep/
+Expects CSVs at:  results/linear_agent/task1/log_a{alpha}_g{gamma}.csv
+Saves figures to: results/linear_agent/task1/
 
 Produces 6 figures:
   1. learning_curves_coins.png     – smoothed coins/round per (α, γ)
@@ -35,8 +35,8 @@ import numpy as np
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-SWEEP_DIR    = Path("results/sweep")     # where sweep.py saved the CSVs
-OUT_DIR      = Path("results/sweep")     # where to save figures
+SWEEP_DIR    = Path("results/linear_agent/task1")     # where sweep.py saved the CSVs
+OUT_DIR      = Path("results/linear_agent/task1")     # where to save figures
 SMOOTH_WIN   = 50                        # rolling average window
 FINAL_WIN    = 100                       # last N rounds for "final performance"
 N_COINS_MAX  = 50                        # coin-heaven maximum

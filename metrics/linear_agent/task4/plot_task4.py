@@ -10,7 +10,7 @@ Reads exclusively from already-archived results/archive_task4_*/ and
 results/task4_ffa_eval/ JSON files -- does not retrain anything itself.
 Missing files are skipped with a warning.
 
-Produces 4 figures in results/task4/:
+Produces 4 figures in results/linear_agent/task4/:
   1. seed_sweep_consistency.png   -- kills/suicides/score across the 5 seeds
                                       (501-505) behind the shipped model
   2. fix_attempts_comparison.png  -- baseline vs. every attempted fix vs. the
@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-OUT_DIR = REPO_ROOT / "results" / "task4"
+OUT_DIR = REPO_ROOT / "results" / "linear_agent" / "task4"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 SMOOTH_WIN = 100

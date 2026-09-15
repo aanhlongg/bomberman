@@ -6,14 +6,14 @@ Run from the repo root:
     python plot_report_extras.py
 
 Produces:
-  results/sweep/task1_final_eval_distribution.png
+  results/linear_agent/task1/task1_final_eval_distribution.png
       -- Task 1 (coin-heaven), final-100-training-round coin distribution
          for the sweep-winning config (alpha=0.05, gamma=0.95), derived from
-         the archived sweep log (results/sweep/log_a0.05_g0.95.csv).
-  results/task2/final_agent_eval_distribution.png
+         the archived sweep log (results/linear_agent/task1/log_a0.05_g0.95.csv).
+  results/linear_agent/task2/final_agent_eval_distribution.png
       -- Task 2 (loot-crate), 200-round pure-greedy coin distribution for the
          final validated agent (escape-routing fix + original 50k weights).
-  results/task2/steps_used_before_after.png
+  results/linear_agent/task2/steps_used_before_after.png
       -- Task 2, steps used per round: before the escape-routing fix (always
          exactly 400 -- no early finishes) vs after (perfect-clear rounds
          finish early, some in as few as 356 steps).
@@ -46,7 +46,7 @@ GOOD = "#2e8b57"
 # ── Task 1: final-100-round coin distribution (sweep-winning config) ───────
 
 coins_per_round = defaultdict(float)
-with open("results/sweep/log_a0.05_g0.95.csv") as f:
+with open("results/linear_agent/task1/log_a0.05_g0.95.csv") as f:
     reader = csv.DictReader(f)
     for row in reader:
         coins_per_round[int(row["round"])] += float(row["sparse_reward"])
@@ -63,10 +63,10 @@ ax.set_title(r"Task 1: converged performance ($\alpha$=0.05, $\gamma$=0.95)")
 ax.legend()
 ax.grid(alpha=0.25)
 fig.tight_layout()
-Path("results/sweep").mkdir(parents=True, exist_ok=True)
-fig.savefig("results/sweep/task1_final_eval_distribution.png", bbox_inches="tight")
+Path("results/linear_agent/task1").mkdir(parents=True, exist_ok=True)
+fig.savefig("results/linear_agent/task1/task1_final_eval_distribution.png", bbox_inches="tight")
 plt.close(fig)
-print("saved results/sweep/task1_final_eval_distribution.png")
+print("saved results/linear_agent/task1/task1_final_eval_distribution.png")
 
 
 # ── Task 2: final agent eval distribution ───────────────────────────────────
@@ -84,10 +84,10 @@ ax.set_title("Task 2: final validated agent")
 ax.legend()
 ax.grid(alpha=0.25)
 fig.tight_layout()
-Path("results/task2").mkdir(parents=True, exist_ok=True)
-fig.savefig("results/task2/final_agent_eval_distribution.png", bbox_inches="tight")
+Path("results/linear_agent/task2").mkdir(parents=True, exist_ok=True)
+fig.savefig("results/linear_agent/task2/final_agent_eval_distribution.png", bbox_inches="tight")
 plt.close(fig)
-print("saved results/task2/final_agent_eval_distribution.png")
+print("saved results/linear_agent/task2/final_agent_eval_distribution.png")
 
 
 # ── Task 2: steps used before/after the escape-routing fix ─────────────────
@@ -117,6 +117,6 @@ ax.set_xlim(345, 402)
 ax.legend(loc="upper left")
 ax.grid(alpha=0.25)
 fig.tight_layout()
-fig.savefig("results/task2/steps_used_before_after.png", bbox_inches="tight")
+fig.savefig("results/linear_agent/task2/steps_used_before_after.png", bbox_inches="tight")
 plt.close(fig)
-print("saved results/task2/steps_used_before_after.png")
+print("saved results/linear_agent/task2/steps_used_before_after.png")

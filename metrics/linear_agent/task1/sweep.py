@@ -8,7 +8,7 @@ from itertools import product
 from pathlib import Path
 
 AGENT_DIR = Path("agent_code/linear_agent")
-RESULTS_DIR = Path("results/sweep")
+RESULTS_DIR = Path("results/linear_agent/task1")
 N_ROUNDS = 2000
 PYTHON = sys.executable
 

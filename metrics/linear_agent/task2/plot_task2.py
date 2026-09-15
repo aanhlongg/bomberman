@@ -7,7 +7,7 @@ Run from the repo root:
 
 Reads checkpoint/eval artifacts already saved under results/ (from the
 decaying-alpha run and the two CRATE_HIT_BONUS attempts) and produces three
-figures in results/task2/:
+figures in results/linear_agent/task2/:
 
   1. diagnosis_before_after.png   -- commit-gap & w_crate_hit_if_bomb across
                                       all checkpoints, decaying-alpha (broken)
@@ -27,7 +27,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-OUT_DIR = Path("results/task2")
+OUT_DIR = Path("results/linear_agent/task2")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 plt.rcParams.update({
