@@ -112,3 +112,14 @@ screenshots/*.webm
 
 replays/
 results/
+
+# Per-run training artifacts (regenerable by rerunning training, see
+# metrics/README.md) -- these grow large (hundreds of MB) over a long
+# training run and add nothing a fresh run wouldn't reproduce.
+agent_code/*/metrics/
+agent_code/*/checkpoints/
+agent_code/*/tracked_bomb_log*.jsonl
+metrics/task*/trace_logs/
+
+# macOS
+.DS_Store

@@ -2,7 +2,7 @@
 State representation and the linear Q-function for the linear_agent.
 
 The agent is a linear function approximator: Q(s, a) = weights . phi(s, a),
-where phi(s, a) is the 9-dimensional feature vector state_action_features()
+where phi(s, a) is the N_FEATURES-dimensional feature vector state_action_features()
 returns below. There is no neural network, replay buffer, or target
 network -- self.weights (see callbacks.py) is the entire model.
 
@@ -31,11 +31,12 @@ ACTIONS = ["UP", "RIGHT", "DOWN", "LEFT", "WAIT", "BOMB"]
 DIRECTIONS = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}
 
 # feature vector layout (index: name)
-# 0: moves_to_coin          5: escape_exists_if_bomb
-# 1: valid                  6: crate_hit_if_bomb
-# 2: is_wait                7: escape_correct_move
-# 3: is_bomb                8: moves_to_crate
-# 4: moves_into_avoidable_danger
+# 0: moves_to_coin          6: crate_hit_if_bomb
+# 1: valid                  7: escape_correct_move
+# 2: is_wait                8: moves_to_crate
+# 3: is_bomb                9: moves_to_opponent
+# 4: moves_into_avoidable_danger   10: bomb_hits_opponent_if_bomb
+# 5: escape_exists_if_bomb
 #
 # 4 and 7 are mutually exclusive by construction (gated on in_escape_window,
 # see state_features): each is forced to 0 whenever the other's context is
@@ -47,7 +48,51 @@ DIRECTIONS = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}
 # directional credit toward the nearest crate on steps where no coin is
 # visible and moves_to_coin has nothing to go on -- it mirrors moves_to_coin
 # exactly, just sourced from crate_distance_map instead.
-N_FEATURES = 9
+#
+# 9 (moves_to_opponent) is deliberately NOT mutually exclusive with 0/8:
+# hunting an opponent (Task 3) is an independent objective layered on top of
+# coin/crate seeking, not a replacement for it, so it can be simultaneously
+# nonzero alongside whichever of 0/8 is currently active. Reward magnitude,
+# not feature gating, is what should make hunting dominate when it matters.
+# Gating it to 0 during in_escape_window (mirroring 0/8) has been tried
+# TWICE and reverted twice -- both times it collapsed escape_correct_move
+# into a structural tie (every direction equally 0-valued) rather than
+# letting it develop real signal. See state_action_features for the full
+# writeup.
+#
+# A graded version of escape_exists_if_bomb (distinguishing "route exists
+# with slack" from "route exists but uses the full ESCAPE_BUDGET with zero
+# steps to spare") was tried at this index and reverted: it's collinear
+# with escape_exists_if_bomb by construction (having margin implies a
+# route exists, so one is always a subset of the other), and splitting the
+# BOMB decision's signal across two correlated features diluted both --
+# kills dropped (28->19) and suicides rose (21->32) rather than the
+# intended improvement. The underlying idea (bomb placement should weigh
+# escape margin, not just existence) may still be worth revisiting in a
+# non-collinear form.
+#
+# Splitting is_wait into is_wait / is_wait_while_chaseable (gated on a new
+# chase_opportunity_exists state flag -- is there a valid direction that
+# reduces distance to the opponent right now) was tried at this index and
+# reverted. The theory: a single shared is_wait weight can't distinguish
+# "nothing else to do, waiting is fine" from "an opponent is chaseable and
+# waiting squanders it," and credit from the far more common ordinary
+# contexts was inflating w_wait past w_moves_to_opponent, causing the
+# agent to prefer idling over hunting once a board was fully cleared
+# (confirmed: 83.5% kills either way, but a direct trace of 12 real
+# cleared-board moments showed WAIT chosen in every single one both
+# before and after). The split made it WORSE, not better --
+# w_is_wait_while_chaseable settled even higher (~9.2) than the original
+# undifferentiated w_wait (~7.6) it replaced, confirmed by re-tracing the
+# same cleared-board scenario post-fix. Likely cause: opponent_potential's
+# shaping reflects the OPPONENT's own movement, which for a
+# randomly-wandering opponent happens independent of our action -- WAIT-ing
+# while they happen to wander closer still earns positive shaped reward,
+# so credit accumulates on is_wait_while_chaseable specifically regardless
+# of what we actually did. Splitting the feature gave that
+# misattribution problem a dedicated weight to inflate rather than fixing
+# the underlying credit-assignment issue.
+N_FEATURES = 11
 GAMMA = 0.95  # discount factor
 
 # how many of the agent's own steps remain to escape after dropping a bomb
@@ -98,6 +143,19 @@ def state_features(game_state, use_target_aware_escape=True):
     for other in game_state["others"]:
         occupied.add(other[3])
 
+    opponent_positions = [other[3] for other in game_state["others"]]
+    # (position, bomb_available) per opponent -- used by
+    # _escape_exists_after_bomb to account for a possible retaliatory bomb
+    # from an adjacent, bomb-capable opponent (see its docstring).
+    opponents_with_bomb = [(other[3], other[2]) for other in game_state["others"]]
+    # multi-source BFS to the nearest opponent, mirroring coin_distance_map
+    # exactly -- always computed (opponents, unlike coins, are never hidden
+    # under a crate, so there's no analogous "nothing to seek" case), and
+    # independent of whether a coin/crate is also being pursued this step
+    opponent_distance_map = (
+        _bfs_distance_map(field, opponent_positions) if opponent_positions else None
+    )
+
     danger_now, bomb_blasts, bomb_timers, danger_now_budget = _compute_danger(game_state)
     position = game_state["self"][3]
     # whichever map is currently guiding navigation (coin takes priority,
@@ -108,7 +166,8 @@ def state_features(game_state, use_target_aware_escape=True):
     if use_target_aware_escape:
         target_distance_map = coin_distance_map if coin_distance_map is not None else crate_distance_map
     escape_direction, escape_distance = _compute_escape_direction(
-        field, position, danger_now, bomb_blasts, bomb_timers, danger_now_budget, target_distance_map
+        field, position, danger_now, bomb_blasts, bomb_timers, danger_now_budget,
+        target_distance_map, opponent_positions,
     )
 
     # state-level gate, not itself a weighted feature: is the agent's
@@ -129,6 +188,9 @@ def state_features(game_state, use_target_aware_escape=True):
         "occupied": occupied,
         "coin_distance_map": coin_distance_map,
         "crate_distance_map": crate_distance_map,
+        "opponent_distance_map": opponent_distance_map,
+        "opponent_positions": opponent_positions,
+        "opponents_with_bomb": opponents_with_bomb,
         "danger_now": danger_now,
         "bomb_blasts": bomb_blasts,
         "escape_direction": escape_direction,
@@ -139,7 +201,7 @@ def state_features(game_state, use_target_aware_escape=True):
 
 def state_action_features(state, action):
     """
-    Build phi(s, action): the 9-dimensional feature vector for one
+    Build phi(s, action): the N_FEATURES-dimensional feature vector for one
     candidate action, given the precomputed `state` from state_features().
     """
     if state is None:
@@ -192,9 +254,63 @@ def state_action_features(state, action):
 
     escape_exists_if_bomb = 0.0
     crate_hit_if_bomb = 0.0
+    bomb_hits_opponent_if_bomb = 0.0
     if action == "BOMB" and valid:
         escape_exists_if_bomb = float(_escape_exists_after_bomb(state, position))
         crate_hit_if_bomb = float(_crate_hit_if_bomb(state["field"], position))
+        # MVP proxy: does the blast cover an opponent's CURRENT tile. Does
+        # not account for the opponent moving before the bomb detonates
+        # (ESCAPE_BUDGET steps later) -- a real limitation for a moving
+        # target. A stricter version requiring the opponent to have no
+        # escape route of their own (mirroring our own
+        # _escape_exists_after_bomb from their position) was tried and
+        # reverted: w_bomb_hits_opponent learned a strongly NEGATIVE weight
+        # (down to -6.66) instead of the intended positive one, and both
+        # kills (28->22) and suicides (21->40, nearly doubling) got worse.
+        # The stricter check likely over-reports "cornered" in some cases,
+        # teaching the model that the bonus-paying signal doesn't reliably
+        # predict a real kill and pulling the agent into riskier bombing.
+        # Root cause not fully diagnosed; reverted to the simpler proxy
+        # rather than debug further given the regression's severity.
+        blast = set(_simulate_blast_coords(position, state["field"]))
+        bomb_hits_opponent_if_bomb = float(
+            any(opp in blast for opp in state["opponent_positions"])
+        )
+
+    # moves_to_opponent: mirrors moves_to_coin, but NOT gated to be mutually
+    # exclusive with moves_to_coin/moves_to_crate (see N_FEATURES comment) --
+    # hunting is an independent objective, not a replacement for the
+    # existing ones.
+    #
+    # Zeroing this during in_escape_window (mirroring moves_to_coin) has now
+    # been tried TWICE and reverted twice. First attempt (pre-seed-sweep):
+    # escape_correct_move was stuck near 0.0, so removing moves_to_opponent
+    # left no differentiating signal at all -- total ties, 100% self-kill.
+    # Second attempt (after trace analysis showed escape_correct_move
+    # reliably reaching 0.6-1.5 and losing the argmax to moves_to_opponent's
+    # 3.6-4.4): reasoned this meant the competing pull was now purely
+    # harmful and safe to remove. Instead, removing it caused an even more
+    # severe collapse (200/200 self-kills, w_escape_correct_move pinned
+    # within +-0.3 of zero for all 5,000 rounds). The lesson: with
+    # moves_to_coin/moves_to_crate already zeroed during escape windows,
+    # moves_to_opponent zeroed too leaves escape_correct_move as the ONLY
+    # action-varying feature there -- at its zero initialization every
+    # direction ties, argmax always picks the same one regardless of
+    # correctness, and that structural tie apparently prevented the weight
+    # from ever developing real signal, unlike when moves_to_opponent's
+    # competing pull was present to create actual reward variance between
+    # actions. escape_correct_move's earlier 0.6-1.5 development turns out
+    # to have DEPENDED on that competition, not merely survived it. Left
+    # active during escape; the fix for escape losing the argmax needs to
+    # come from elsewhere (e.g. strengthening escape's own signal without
+    # creating a tie), not from removing the only other one.
+    moves_to_opponent = 0.0
+    if valid and state["opponent_distance_map"] is not None:
+        current_distance = state["opponent_distance_map"][position]
+        new_distance = state["opponent_distance_map"][new_position]
+
+        if new_distance < current_distance:
+            moves_to_opponent = 1.0
 
     # escape_correct_move: only meaningful when in_escape_window holds --
     # does this action match the first step of the verified shortest path
@@ -219,6 +335,8 @@ def state_action_features(state, action):
             crate_hit_if_bomb,
             escape_correct_move,
             moves_to_crate,
+            moves_to_opponent,
+            bomb_hits_opponent_if_bomb,
         ]
     )
 
@@ -396,16 +514,42 @@ def _escape_exists_after_bomb(state, position):
     Simulates dropping a new bomb at `position` and runs a breadth-first
     search, bounded to ESCAPE_BUDGET steps, over free tiles (walls and
     crates both block movement) to check whether at least one tile
-    *outside* the new bomb's blast is reachable in time. Tiles that are
-    already dangerous (existing explosions / other ticking bombs) are
-    excluded from the search, since walking through them would be fatal on
-    the way out.
+    *outside* the new bomb's blast (and any retaliatory blast, see below)
+    is reachable in time. Tiles that are already dangerous (existing
+    explosions / other ticking bombs) are excluded from the search, since
+    walking through them would be fatal on the way out -- as are tiles
+    currently occupied by an opponent (Task 3): an opponent's exact
+    position can change before the agent gets there, but treating it as
+    free right now would let this search "find" an escape through a tile
+    that's actually blocked at this exact moment, which _is_valid would
+    then reject.
+
+    Also accounts for a possible RETALIATORY bomb from any opponent
+    currently adjacent to `position` (Manhattan distance <= 1) with a bomb
+    available. Trace analysis vs rule_based_agent showed it reliably drops
+    a bomb back at its own current tile whenever we bomb it while
+    adjacent (its own rule-based logic checks exactly this condition) --
+    two simultaneous blasts from adjacent tiles routinely leave no escape
+    within the fixed budget, but this feature previously only ever
+    accounted for our own blast, so it looked "safe" right up until the
+    opponent's own bomb closed the last exit at the same instant.
+    peaceful_agent and coin_collector_agent never bomb an adjacent
+    opponent deliberately, so this is a no-op against them in practice
+    (opponents_with_bomb is empty or none are ever adjacent+bomb-capable
+    at decision time often enough to matter) -- it's specifically aimed at
+    opponents that do.
     """
     field = state["field"]
     new_blast = set(_simulate_blast_coords(position, field))
-    forbidden = set(state["danger_now"])
+    forbidden = set(state["danger_now"]) | set(state["opponent_positions"])
     for blast in state["bomb_blasts"].values():
         forbidden.update(blast)
+
+    retaliation_blast = set()
+    for opp_pos, opp_bomb_available in state["opponents_with_bomb"]:
+        if opp_bomb_available and abs(opp_pos[0] - position[0]) + abs(opp_pos[1] - position[1]) <= 1:
+            retaliation_blast.update(_simulate_blast_coords(opp_pos, field))
+    combined_blast = new_blast | retaliation_blast
 
     visited = {position: 0}
     frontier = deque([position])
@@ -421,7 +565,7 @@ def _escape_exists_after_bomb(state, position):
             if field[neighbor] != 0 or neighbor in forbidden:
                 continue
             visited[neighbor] = depth + 1
-            if neighbor not in new_blast:
+            if neighbor not in combined_blast:
                 return True
             frontier.append(neighbor)
     return False
@@ -490,7 +634,8 @@ def _bfs_first_step_out_of_blast(field, start, blast, forbidden, budget, target_
 
 
 def _compute_escape_direction(
-    field, position, danger_now, bomb_blasts, bomb_timers, danger_now_budget, target_distance_map=None
+    field, position, danger_now, bomb_blasts, bomb_timers, danger_now_budget,
+    target_distance_map=None, opponent_positions=(),
 ):
     """
     If the agent is currently threatened, find the shortest path to safety
@@ -508,13 +653,19 @@ def _compute_escape_direction(
     Task 2 has at most one threat active at a time (bomb_available only
     resets once a bomb's danger fully clears), so at most one of the two
     checks below ever fires in practice.
+
+    opponent_positions (Task 3): treated as forbidden in both branches, for
+    the same reason _escape_exists_after_bomb does -- an opponent occupies
+    its current tile right now, so a route planned through it isn't
+    actually executable this step, even though the opponent may well have
+    moved off it by the time the agent would arrive.
     """
     for bomb_pos, timer in bomb_timers.items():
         blast = bomb_blasts[bomb_pos]
         if position not in blast:
             continue
         remaining_budget = timer + 1
-        forbidden = set(danger_now)
+        forbidden = set(danger_now) | set(opponent_positions)
         for other_pos, other_blast in bomb_blasts.items():
             if other_pos != bomb_pos:
                 forbidden.update(other_blast)
@@ -529,7 +680,7 @@ def _compute_escape_direction(
         # forbidden must NOT include danger_now itself here -- we're
         # standing inside it and need to traverse through more of it to get
         # out, exactly as the ticking-bomb case never forbids its own blast
-        forbidden = set()
+        forbidden = set(opponent_positions)
         for blast in bomb_blasts.values():
             forbidden.update(blast)
         first_step, distance = _bfs_first_step_out_of_blast(
@@ -559,6 +710,46 @@ def coin_potential(state):
 
     if np.isfinite(distance):
         return -distance
+    else:
+        return 0.0
+
+
+# Scales opponent_potential's raw BFS-distance contribution relative to
+# coin_potential/crate_potential's implicit scale of 1.0. A positive
+# scalar multiple of a valid potential function is itself still a valid
+# (policy-invariant) potential function.
+#
+# Tried at 0.3 (shrinking it) on the theory that w_moves_to_opponent
+# growing faster than w_escape_correct_move was crowding out escape
+# priority during escape windows -- reverted: w_escape_correct_move stayed
+# stuck near 0.0 regardless (100% self-kill either way), showing it wasn't
+# actually competing for gradient with moves_to_opponent at all.
+# moves_to_opponent's large, unscaled weight was apparently acting as an
+# accidental substitute escape heuristic (favoring movement away from the
+# opponent, which correlates with safety often enough to matter);
+# shrinking it just removed that crutch without fixing the real problem,
+# which is that escape_correct_move isn't developing properly in the
+# Task 3 setting for a still-unknown reason. Left at 1.0 (no scaling)
+# pending that investigation.
+OPPONENT_POTENTIAL_SCALE = 1.0
+
+
+def opponent_potential(state):
+    """
+    Potential-based shaping term (Task 3): negative BFS distance to the
+    nearest opponent, scaled by OPPONENT_POTENTIAL_SCALE. Unlike
+    coin_potential/crate_potential, always active when at least one
+    opponent exists -- hunting is layered on top of coin/crate seeking,
+    not gated to be exclusive with it (see the N_FEATURES comment on
+    moves_to_opponent).
+    """
+    if state is None or state["opponent_distance_map"] is None:
+        return 0.0
+
+    distance = state["opponent_distance_map"][state["position"]]
+
+    if np.isfinite(distance):
+        return -distance * OPPONENT_POTENTIAL_SCALE
     else:
         return 0.0
 

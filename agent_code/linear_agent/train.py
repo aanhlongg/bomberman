@@ -34,6 +34,7 @@ from .features import (
     coin_potential,
     crate_potential,
     escape_potential,
+    opponent_potential,
     q_values,
     state_action_features,
     state_features,
@@ -72,6 +73,17 @@ def _alpha(round: int) -> float:
 # event rewards below
 KILLED_SELF_PENALTY = -10.0
 
+# Task 3: dying to an OPPONENT's bomb (GOT_KILLED) is scored the same as
+# dying to our own (KILLED_SELF) -- death is death from the agent's
+# perspective, and there's no reason yet to treat the two differently.
+GOT_KILLED_PENALTY = -10.0
+
+# deliberately larger in magnitude than CRATE_DESTROYED: killing an
+# opponent is meant to dominate the reward landscape once one is reachable
+# (per the "keep coins/crates, weight kills much higher" design choice),
+# not just edge it out
+KILLED_OPPONENT_REWARD = 10.0
+
 # Direct, immediate reward for a bomb-drop that hits at least one crate,
 # paid on the BOMB transition itself rather than waiting for
 # CRATE_DESTROYED (which doesn't fire until ESCAPE_BUDGET steps later, once
@@ -89,6 +101,59 @@ KILLED_SELF_PENALTY = -10.0
 # actions gets resolved by argmax's arbitrary tie-break, not by the policy.
 # 5.0 was chosen empirically to sit comfortably above that noise floor.
 CRATE_HIT_BONUS = 5.0
+
+# Task 3: same direct-credit mechanism as CRATE_HIT_BONUS, applied
+# proactively this time instead of being discovered the hard way --
+# KILLED_OPPONENT wouldn't fire until several steps after the bomb that
+# caused it (through the same kind of feature-less escape-phase states that
+# made crate_hit_potential fail), so pay it immediately on the BOMB
+# transition whenever bomb_hits_opponent_if_bomb == 1. Starting at the same
+# magnitude as CRATE_HIT_BONUS as a first guess; may need its own sweep --
+# this is a genuinely different, moving-target situation and the current
+# bomb_hits_opponent_if_bomb feature is only an MVP (current-position)
+# proxy, not one that accounts for the opponent moving before detonation.
+OPPONENT_HIT_BONUS = 5.0
+
+# Direct, immediate reward for taking the verified-correct escape step
+# (escape_correct_move == 1), on top of escape_potential's existing dense
+# shaping. escape_correct_move is ground truth (the first step of a BFS
+# shortest path to safety), exactly the kind of "known-good decision" the
+# other two direct bonuses above already pay for immediately rather than
+# waiting on it. The reasoning for needing this at all: three independent
+# 5,000-round Task 3 training runs, all otherwise identical, produced
+# w_escape_correct_move values of 1.03, 0.73, and 0.28 -- and the 0.28 run
+# self-killed 100% of the time, because moves_to_opponent (which typically
+# settles around 2.6-3.7) then wins every escape-vs-chase disagreement.
+# escape_potential alone is apparently too weak or too slow a signal for
+# this weight to develop reliably within 5,000 rounds; this pays for the
+# same ground truth directly, the same way CRATE_HIT_BONUS did for
+# crate_hit_if_bomb.
+#
+# NOT currently wired into game_events_occurred -- tried at 8.0 and
+# reverted. It worked exactly as intended for w_escape_correct_move's own
+# magnitude (reached ~15.4, cleanly above moves_to_opponent), but unlike
+# CRATE_HIT_BONUS/OPPONENT_HIT_BONUS (paid once, on a single BOMB
+# transition), this one pays out on every correct step of a multi-step
+# escape sequence -- which made deliberately bombing yourself into danger,
+# then "correctly" escaping it repeatedly, net-profitable: w_is_bomb
+# collapsed from its usual -8 to -11 down to -1.2, and self-kill rate rose
+# to 87% despite the escape direction itself being more reliably correct
+# than ever. A smaller magnitude, or paying it once per escape episode
+# rather than per step, might avoid this -- not yet tried.
+ESCAPE_MOVE_BONUS = 8.0
+
+# see the synthetic-update comment in game_events_occurred for the full
+# writeup. Named index into state_action_features' return vector (see
+# features.py's N_FEATURES layout comment) -- a local constant here rather
+# than importing callbacks.py's private one, since this module shouldn't
+# depend on callbacks.py's internals.
+_ESCAPE_CORRECT_MOVE_INDEX = 7
+
+# Target value the synthetic escape update below pulls w_escape_correct_move
+# toward. Set comfortably above moves_to_opponent's observed ceiling
+# (~3.6-4.85 across every Task 3 run so far) so the correct escape
+# direction wins the argmax outright rather than by a fragile margin.
+ESCAPE_CORRECT_MOVE_SYNTHETIC_TARGET = 8.0
 
 # analysis-only: every CHECKPOINT_INTERVAL rounds, dump a round-numbered copy
 # of the weight vector (see end_of_round) so a long run's trajectory can be
@@ -142,6 +207,16 @@ def game_events_occurred(
     bomb_feat = state_action_features(old_state, "BOMB")
     if self_action == "BOMB" and bomb_feat[1] == 1.0 and bomb_feat[6] == 1.0:
         reward += CRATE_HIT_BONUS
+    if self_action == "BOMB" and bomb_feat[1] == 1.0 and bomb_feat[10] == 1.0:
+        reward += OPPONENT_HIT_BONUS
+
+    # ESCAPE_MOVE_BONUS is intentionally NOT wired in here -- see its
+    # definition for why it was tried and reverted (it worked exactly as
+    # intended for w_escape_correct_move's magnitude, but paying per
+    # correct escape *step* made repeatedly bombing yourself into danger
+    # and then escaping it net-profitable: w_is_bomb collapsed from its
+    # usual -8 to -11 down to -1.2, and self-kill rate rose to 87%, despite
+    # the escape *direction* being more reliably correct than ever).
 
     self.logger.debug(f"Reward for action {self_action}: {reward}")
 
@@ -174,6 +249,51 @@ def game_events_occurred(
             synthetic_target = (GAMMA ** ESCAPE_BUDGET) * KILLED_SELF_PENALTY
             sgd_update(self, old_state, "BOMB", td_target=synthetic_target, round=old_game_state["round"])
             self.prev_synthetic_update = True
+
+    # Synthetic counterfactual update (Task 3): escape_direction, whenever
+    # in_escape_window holds, is likewise deterministic ground truth (the
+    # first step of features._compute_escape_direction's verified BFS
+    # shortest path to safety) -- exactly the kind of known fact the update
+    # above already injects directly rather than waiting for real
+    # experience to teach it. Motivated by trace analysis across BOTH Task
+    # 3 phases: escape_correct_move's weight (~1.0-1.5) reliably loses the
+    # argmax to moves_to_opponent's (~3.6-4.85) during real escape windows,
+    # and real experience alone isn't generating enough signal for it to
+    # grow past that.
+    #
+    # Two different fixes were tried first and both failed differently.
+    # Zeroing moves_to_opponent during escape windows (see its comment in
+    # features.py) collapsed escape_correct_move into a permanent 0-valued
+    # tie -- that competing pull turns out to have been providing the
+    # reward variance the weight needed to learn from at all, not just
+    # getting in its way. A per-step direct reward bonus (ESCAPE_MOVE_BONUS
+    # above) enabled reward-hacking (repeatedly bombing yourself into
+    # danger to "correctly" escape it for profit).
+    #
+    # This differs from both. Unlike ESCAPE_MOVE_BONUS, it never touches
+    # the reward function -- it's a direct weight update, not a payment for
+    # a real action, so there's nothing to hack. Unlike the update above
+    # (which reuses the ordinary feature vector via sgd_update), it uses an
+    # ISOLATED synthetic feature vector with only the escape_correct_move
+    # slot set to 1: the ordinary feature vector for a directional action
+    # also carries the "valid" feature (weight ~20-30, shared across every
+    # valid action, escape-related or not) -- running the ordinary update
+    # would drag that shared weight toward this target too, corrupting it
+    # everywhere else in the model. Isolating the feature avoids that
+    # entanglement entirely, and the ordinary bounded SGD rule means this
+    # self-limits as w_escape_correct_move approaches the target, rather
+    # than drifting unboundedly the way a plain additive nudge would.
+    #
+    # Fired unconditionally (not epsilon-scaled like the update above)
+    # whenever in_escape_window holds with a real escape route -- the
+    # diagnosed problem here is signal WEAKNESS, so throttling this by a
+    # decaying epsilon would work against the fix rather than for it.
+    if old_state is not None and old_state["in_escape_window"] and old_state["escape_direction"] is not None:
+        escape_feature_vector = np.zeros(N_FEATURES)
+        escape_feature_vector[_ESCAPE_CORRECT_MOVE_INDEX] = 1.0
+        prediction = self.weights[_ESCAPE_CORRECT_MOVE_INDEX]
+        alpha = _alpha(old_game_state["round"])
+        self.weights += alpha * (ESCAPE_CORRECT_MOVE_SYNTHETIC_TARGET - prediction) * escape_feature_vector
 
     # --- read-only bomb-danger-window instrumentation (no weights touched) ---
     # append this step's data to whatever window is already in progress,
@@ -339,7 +459,14 @@ def sgd_update(self, old_state, action, td_target: float, round: int) -> None:
 
 
 def reward_from_events(self, events: List[str]) -> float:
-    """Sum of the sparse, per-event rewards for one step's events list."""
+    """
+    Sum of the sparse, per-event rewards for one step's events list.
+
+    OPPONENT_ELIMINATED is deliberately not rewarded here: it fires
+    whenever *any* opponent dies, including from their own mistakes, not
+    only when we caused it -- KILLED_OPPONENT is the event that actually
+    means "we did this."
+    """
     game_rewards = {
         e.COIN_COLLECTED: 1.0,
         e.WAITED: -0.15,
@@ -348,6 +475,8 @@ def reward_from_events(self, events: List[str]) -> float:
         e.CRATE_DESTROYED: 1.5,
         e.COIN_FOUND: 2.0,
         e.KILLED_SELF: KILLED_SELF_PENALTY,
+        e.GOT_KILLED: GOT_KILLED_PENALTY,
+        e.KILLED_OPPONENT: KILLED_OPPONENT_REWARD,
     }
     reward_sum = 0.0
     for event in events:
@@ -360,14 +489,15 @@ def reward_from_events(self, events: List[str]) -> float:
 def potential_shaping(old_state, new_state) -> float:
     """
     Potential-based reward shaping: reward = gamma * phi(s') - phi(s),
-    where phi = coin_potential + escape_potential + crate_potential is the
-    sum of three independent potential functions. Ng, Harada & Russell
-    (1999): any potential function preserves the optimal policy, and the
-    sum of several valid potential functions is itself one.
+    where phi = coin_potential + escape_potential + crate_potential +
+    opponent_potential is the sum of four independent potential functions.
+    Ng, Harada & Russell (1999): any potential function preserves the
+    optimal policy, and the sum of several valid potential functions is
+    itself one.
 
-    crate_hit_if_bomb's credit is handled separately, as a direct
-    CRATE_HIT_BONUS on the BOMB transition itself (see
-    game_events_occurred) rather than through a potential here -- a
+    crate_hit_if_bomb's and bomb_hits_opponent_if_bomb's credit are both
+    handled separately, as direct bonuses on the BOMB transition itself
+    (see game_events_occurred) rather than through a potential here -- a
     potential's 0->1->0 shape over a bomb's lifetime unavoidably decays
     away and inverts sign before detonation, landing its penalty on a
     later, unrelated action instead of the BOMB decision it's meant to
@@ -376,12 +506,15 @@ def potential_shaping(old_state, new_state) -> float:
     crate_potential pairs with the moves_to_crate feature the same way
     coin_potential pairs with moves_to_coin: it gives directional guidance
     toward the nearest crate-adjacent tile on the steps where no coin is
-    visible.
+    visible. opponent_potential pairs with moves_to_opponent the same way,
+    but is always active (not gated to be mutually exclusive with the
+    other two) -- see the N_FEATURES comment in features.py for why.
     """
     old_potential = (
         coin_potential(old_state)
         + escape_potential(old_state)
         + crate_potential(old_state)
+        + opponent_potential(old_state)
     )
 
     if new_state is None:
@@ -391,6 +524,7 @@ def potential_shaping(old_state, new_state) -> float:
             coin_potential(new_state)
             + escape_potential(new_state)
             + crate_potential(new_state)
+            + opponent_potential(new_state)
         )
 
     return GAMMA * new_potential - old_potential

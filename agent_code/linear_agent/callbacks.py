@@ -111,6 +111,8 @@ def setup(self):
             "w_crate_hit",
             "w_escape_correct_move",
             "w_moves_to_crate",
+            "w_moves_to_opponent",
+            "w_bomb_hits_opponent",
         ]
     )
 
@@ -141,6 +143,8 @@ def act(self, game_state: dict) -> str:
     else:
         self.logger.debug("Querying model for action.")
         values = q_values(self.weights, state)
+        if _adjacent_opponent_can_bomb(state):
+            values[ACTIONS.index("BOMB")] = -np.inf
         best_move = np.argmax(values)
         action = ACTIONS[best_move]
 
@@ -172,6 +176,104 @@ RANDOM_ACTION_WEIGHTS = np.array([0.15, 0.15, 0.15, 0.15, 0.1, 0.3])
 _IDX_MOVES_INTO_AVOIDABLE_DANGER = 4
 _IDX_ESCAPE_EXISTS_IF_BOMB = 5
 _IDX_ESCAPE_CORRECT_MOVE = 7
+
+# Applying a hard, non-learned safety override to the GREEDY action
+# selection (not just the exploration branch below) was tried and
+# reverted, in two scopes, against coin_collector_agent:
+#   1. Veto BOMB from the argmax if verified doomed (escape_exists_if_bomb
+#      == 0) + always take escape_direction during an active escape
+#      window: self-kills were essentially unchanged (the dominant
+#      remaining causes are dynamic -- e.g. the opponent closing the last
+#      exit, or mutual/simultaneous bombing -- not "the policy knew
+#      better and picked wrong"), while the added conservatism nearly
+#      doubled the stalemate rate (~32% -> 45.5%) by discouraging
+#      otherwise-reasonable engagement.
+#   2. Escape-direction override only (drop the BOMB veto): a single
+#      5,000-round run showed the WORST self-kill rate of any config
+#      tested (29.5%, vs. 18.5% baseline) -- though given this matchup's
+#      already-wide seed-to-seed variance (15-30% suicides on the
+#      unmodified baseline across 5 seeds), this wasn't distinguished
+#      from noise before the idea was dropped in favor of keeping the
+#      validated seed-401 baseline.
+#
+# A THIRD, narrower veto (_adjacent_opponent_can_bomb below, still active)
+# targets rule_based_agent specifically: unlike the two attempts above
+# (general "is this bomb doomed" checks), this unconditionally refuses to
+# BOMB whenever an opponent is orthogonally adjacent AND has a bomb
+# available, full stop -- no escape-existence calculus involved. Motivated
+# by trace analysis showing rule_based_agent reliably bombs back the
+# instant we bomb it while adjacent (its own rule-based logic checks
+# exactly this condition), and making our own escape_exists_if_bomb
+# retaliation-aware (see features.py) didn't change behavior at all (13
+# kills / 139 suicides vs. 17 kills / 131 suicides without it) -- the
+# learned weights just weren't discouraging that exchange even once the
+# ground truth correctly flagged it as usually fatal. This veto removes
+# the choice entirely rather than hoping the Q-values act on better
+# information.
+#
+# A FOURTH override -- the escape-direction-forced-move from attempt #2
+# above, RETRIED in the greedy branch of act() -- was tried and reverted.
+# Motivation: re-tracing deaths against rule_based_agent with this
+# session's shipped (seed-505) model showed 2 of 4 self-kill traces where
+# escape_correct_move was genuinely 1.0 for a real, computed escape route,
+# and the agent's own greedy policy still chose WAIT (or dropped a second
+# bomb) instead of following it, breaking a partially-completed escape.
+# Tested with a full retrain + eval against all three opponents: suicides
+# vs. rule_based_agent were statistically unchanged (41/200 -> 40/200,
+# both well inside the 5-seed sweep's 17-22% baseline range) and kills
+# dropped (23 -> 14); peaceful_agent and coin_collector_agent were
+# unaffected either way. Conclusion: forcing the verified-correct escape
+# move does NOT reduce self-kills here, which means the 2 "policy ignored
+# a real escape" trace examples were not representative of the dominant
+# failure mode in aggregate -- the remaining suicides are overwhelmingly
+# the genuine "no escape exists" case (attempt #3's motivating trace
+# evidence, rounds 3 and 16: the opponent's own simultaneous, independent
+# bombing closes the last exit one step after ours is committed), which no
+# override on OUR action selection can prevent. Reverted; seed-505 remains
+# the shipped model.
+#
+# A FIFTH, different-shaped override -- a _board_cleared_with_opponent
+# veto, tried and reverted -- targeted not a self-kill but the "no urge to
+# finish off the last opponent" stall: once no coin is visible and no
+# crate is reachable, a direct trace (15 samples, seed-505 model vs
+# peaceful_agent, opponent 8-19 tiles away, no danger active) showed
+# WAIT's Q-value (~20.9) beats BOTH moving toward the opponent (~17.38)
+# and BOMB (~19.94) in literally every sample -- the agent never even
+# starts closing the distance, so it never gets adjacent enough to bomb.
+# The fix vetoed WAIT outright in this situation (no coin, no reachable
+# crate, an opponent exists, not mid-escape), forcing the existing
+# weights' own ranking (BOMB > approach) to take over once distance
+# started closing.
+#
+# Tested with a full retrain + eval against all three opponents: a clean
+# win against peaceful_agent (kills 77-79.5% -> 88%, score up, suicides
+# still low at 4%) but a real regression against BOTH bomb-capable
+# opponents -- coin_collector_agent (score 1299->1209, kills 28.5%->8.5%,
+# suicides 15.5%->17.5%) and rule_based_agent (score down, kills down,
+# suicides 20-20.5%->25%, outside the previously-established 5-seed
+# sweep's 17-22% range). Root cause: WAIT was also serving as a passive
+# safety valve specifically against opponents that can retaliate --
+# forcing constant pursuit once the board clears exposes the agent to
+# more bomb-capable-opponent interactions than standing pat did, a
+# downside that simply doesn't exist against peaceful_agent (which never
+# bombs). Reverted; seed-505 remains the shipped model. A scoped version
+# (veto WAIT only when the tracked opponent cannot bomb, mirroring
+# _adjacent_opponent_can_bomb's own bomb-capability check) might capture
+# the peaceful_agent win without the other two regressions -- not yet
+# tried.
+
+
+def _adjacent_opponent_can_bomb(state):
+    """
+    True if any opponent is orthogonally adjacent (Manhattan distance <=
+    1) to our current position and currently has a bomb available. See
+    the comment above this function's callers for why this exists.
+    """
+    position = state["position"]
+    for opp_pos, opp_bomb_available in state["opponents_with_bomb"]:
+        if opp_bomb_available and abs(opp_pos[0] - position[0]) + abs(opp_pos[1] - position[1]) <= 1:
+            return True
+    return False
 
 
 def _recent_escape_survival_rate(tracked_bomb_log, window):
@@ -229,6 +331,8 @@ def _safe_random_action(self, state):
 
     def is_safe(action):
         f = features[action]
+        if action == "BOMB" and _adjacent_opponent_can_bomb(state):
+            return False
         if action == "BOMB" and f[_IDX_ESCAPE_EXISTS_IF_BOMB] == 0.0:
             return doomed_bomb_gate_open and random.random() < ALLOW_DOOMED_BOMB_PROB
         if in_escape_window:
@@ -263,7 +367,15 @@ def _log_previous_transition(self, game_state, state) -> None:
         shaped_reward,
         *self.weights,
     ])
-    self.metrics_file.flush()
+    # Flushing every step forces an OS-level sync on an ever-growing file,
+    # which measurably slows training down over a long run (see README's
+    # "Note on training speed"). Every row is still written to Python's
+    # own buffer regardless -- this only defers when it's actually synced
+    # to disk, so no data is lost in normal operation; only an ungraceful
+    # process kill (not a risk here, since linear-model.pt itself is saved
+    # separately every round in train.py) could lose the last <=200 rows.
+    if game_state["step"] % 200 == 0:
+        self.metrics_file.flush()
 
 
 def _epsilon(round: int) -> float:
