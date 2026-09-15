@@ -14,13 +14,24 @@ RESULTS_DIR = REPO_ROOT / "results" / "linear_agent" / "task1"
 N_ROUNDS = 2000
 PYTHON = sys.executable
 
+# ALPHAS varies ALPHA_START, the decaying learning-rate schedule's starting
+# value (train.py: ALPHA(round) = max(ALPHA_MIN, ALPHA_START / (1 +
+# ALPHA_DECAY_RATE * round))) -- ALPHA_DECAY_RATE and ALPHA_MIN stay at
+# train.py's current defaults throughout the sweep. train.py originally had a
+# flat ALPHA constant this sweep patched directly; it was later refactored
+# into this decaying schedule (Task 2's decaying-alpha work), which silently
+# broke the patch regex below -- re.sub found no match and left ALPHA_START
+# untouched, so every "different alpha" column actually ran with the same
+# real learning rate. Fixed to target ALPHA_START instead.
 ALPHAS = [0.001, 0.01, 0.05, 0.1]
 GAMMAS = [0.80, 0.90, 0.95, 0.99]
 
 def patch(filepath, pattern, value):
     text = Path(filepath).read_text()
-    text = re.sub(pattern, value, text, flags=re.MULTILINE)
-    Path(filepath).write_text(text)
+    new_text, n_subs = re.subn(pattern, value, text, flags=re.MULTILINE)
+    if n_subs == 0:
+        raise RuntimeError(f"patch() pattern {pattern!r} matched nothing in {filepath}")
+    Path(filepath).write_text(new_text)
 
 def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -36,7 +47,7 @@ def main():
 
             # Patch hyperparameters in-place
             patch(AGENT_DIR / "train.py",
-                  r"^ALPHA = [\d.]+", f"ALPHA = {alpha}")
+                  r"^ALPHA_START = [\d.]+", f"ALPHA_START = {alpha}")
             patch(AGENT_DIR / "features.py",
                   r"^GAMMA = [\d.]+", f"GAMMA = {gamma}")
 
