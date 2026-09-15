@@ -120,15 +120,17 @@ were tried and reverted after regressing other opponents).
 ## Metrics: reproducing our results
 
 Every sweep, trace, and plot behind the numbers in this README and in the report lives under
-`metrics/`, organized by task:
+`metrics/`, organized first by agent, then by task (`tree_agent` will get its own sibling
+folder here as its tasks are completed):
 
 ```
 metrics/
-├── plot_metrics.py        # generic per-run training-log plotting utility
-├── task1/                 # coin-heaven hyperparameter sweep (alpha x gamma grid)
-├── task2/                 # loot-crate reward-magnitude sweeps and self-kill investigation
-├── task3/                 # peaceful_agent / coin_collector_agent 5-seed sweeps + death/stalemate traces
-└── task4/                 # rule_based_agent 5-seed sweep + death/escape traces
+└── linear_agent/
+    ├── plot_metrics.py        # generic per-run training-log plotting utility
+    ├── task1/                 # coin-heaven hyperparameter sweep (alpha x gamma grid)
+    ├── task2/                 # loot-crate reward-magnitude sweeps and self-kill investigation
+    ├── task3/                 # peaceful_agent / coin_collector_agent 5-seed sweeps + death/stalemate traces
+    └── task4/                 # rule_based_agent 5-seed sweep + death/escape traces
 ```
 
 All scripts are self-locating (they resolve the repository root from their own file path, not
@@ -139,40 +141,40 @@ tracked in git.
 
 **Task 1** — hyperparameter sweep behind the Task 1 heatmaps/learning curves:
 ```bash
-uv run metrics/task1/sweep.py        # ~2000 rounds x 16 (alpha, gamma) configurations
-uv run metrics/task1/plot_sweep.py   # renders the figures referenced in report1_body.typ
+uv run metrics/linear_agent/task1/sweep.py        # ~2000 rounds x 16 (alpha, gamma) configurations
+uv run metrics/linear_agent/task1/plot_sweep.py   # renders the figures referenced in report1_body.typ
 ```
 
 **Task 2** — reward-magnitude sweeps and the self-kill investigation:
 ```bash
-uv run metrics/task2/reward_sweep.py        # first reward-magnitude sweep
-uv run metrics/task2/reward_sweep2.py       # follow-up sweep (resumable via reward_sweep2_resume.py)
-uv run metrics/task2/killed_self_sweep.py   # self-kill-rate-focused sweep
-uv run metrics/task2/plot_task2.py          # renders the figures referenced in report2_body.typ
-uv run metrics/task2/plot_report_extras.py  # supplementary figures
+uv run metrics/linear_agent/task2/reward_sweep.py        # first reward-magnitude sweep
+uv run metrics/linear_agent/task2/reward_sweep2.py       # follow-up sweep (resumable via reward_sweep2_resume.py)
+uv run metrics/linear_agent/task2/killed_self_sweep.py   # self-kill-rate-focused sweep
+uv run metrics/linear_agent/task2/plot_task2.py          # renders the figures referenced in report2_body.typ
+uv run metrics/linear_agent/task2/plot_report_extras.py  # supplementary figures
 ```
 
 **Task 3** — the 5-seed validation sweeps and the death/stalemate traces that diagnosed each
 fix attempt (each trace script drives the environment directly and prints per-step Q-values,
 rather than going through `main.py`, for fine-grained debugging):
 ```bash
-bash metrics/task3/seed_sweep.sh                 # seeds 101-105, vs peaceful_agent
-bash metrics/task3/seed_sweep_synth_escape.sh     # seeds 301-305, validates the synthetic escape-update fix
-bash metrics/task3/seed_sweep_collector.sh        # seeds 201-205, vs coin_collector_agent
-bash metrics/task3/seed_sweep_collector_final.sh  # seeds 401-405, final validated coin_collector_agent config
-uv run metrics/task3/trace_stalemates.py          # confirms the ~32% coin_collector_agent stalemate rate
-uv run metrics/task3/trace_deaths.py              # general death-cause trace
-uv run metrics/task3/trace_deaths_phase1.py       # phase-1 (peaceful_agent) death trace
-uv run metrics/task3/trace_deaths_collector_v2.py # coin_collector_agent death trace
+bash metrics/linear_agent/task3/seed_sweep.sh                 # seeds 101-105, vs peaceful_agent
+bash metrics/linear_agent/task3/seed_sweep_synth_escape.sh     # seeds 301-305, validates the synthetic escape-update fix
+bash metrics/linear_agent/task3/seed_sweep_collector.sh        # seeds 201-205, vs coin_collector_agent
+bash metrics/linear_agent/task3/seed_sweep_collector_final.sh  # seeds 401-405, final validated coin_collector_agent config
+uv run metrics/linear_agent/task3/trace_stalemates.py          # confirms the ~32% coin_collector_agent stalemate rate
+uv run metrics/linear_agent/task3/trace_deaths.py              # general death-cause trace
+uv run metrics/linear_agent/task3/trace_deaths_phase1.py       # phase-1 (peaceful_agent) death trace
+uv run metrics/linear_agent/task3/trace_deaths_collector_v2.py # coin_collector_agent death trace
 ```
 
 **Task 4** — the `rule_based_agent` validation sweep and the traces that diagnosed the
 mutual-retaliation self-kill mechanism and (later) the cleared-board stall:
 ```bash
-bash metrics/task4/seed_sweep_rulebased.sh       # seeds 501-505, vs rule_based_agent
-uv run metrics/task4/trace_deaths_rulebased.py   # diagnoses the mutual-bombing self-kill mechanism
-uv run metrics/task4/trace_adjacent_moment.py    # inspects Q-values at the moment of bombing an adjacent opponent
-uv run metrics/task4/trace_cleared_board.py      # inspects Q-values once the board is fully cleared
+bash metrics/linear_agent/task4/seed_sweep_rulebased.sh       # seeds 501-505, vs rule_based_agent
+uv run metrics/linear_agent/task4/trace_deaths_rulebased.py   # diagnoses the mutual-bombing self-kill mechanism
+uv run metrics/linear_agent/task4/trace_adjacent_moment.py    # inspects Q-values at the moment of bombing an adjacent opponent
+uv run metrics/linear_agent/task4/trace_cleared_board.py      # inspects Q-values once the board is fully cleared
 ```
 
 Each seed sweep takes roughly 25-35 minutes per seed (5000 training rounds + a 200-round eval)

@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 SEEDS="301 302 303 304 305"
 

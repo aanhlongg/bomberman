@@ -1,17 +1,13 @@
 """
-Standalone diagnostic: run linear_agent (pure-greedy, current shipped model)
-vs coin_collector_agent directly through BombeRLeWorld (no CLI, no replay
-file round-trip), capturing the exact game_state fed to linear_agent every
-step. When a round ends in linear_agent's death, dump the last N steps
-(position, opponent position, bombs, explosion map, action taken, events,
-and our own features.state_features/state_action_features recomputed on
-that exact state) to a human-readable trace file.
+Trace linear_agent's deaths (both self-kills and opponent-kills) vs
+rule_based_agent, using the current (freshly-trained-on-this-matchup)
+shipped model, to find the dominant failure mode.
 """
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-os.chdir(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+os.chdir(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import numpy as np
 import events as e
@@ -28,18 +24,17 @@ args = WorldArgs(
     match_name=None, seed=None, silence_errors=False, scenario="classic",
 )
 
-world = BombeRLeWorld(args, [("linear_agent", False), ("coin_collector_agent", False)])
+world = BombeRLeWorld(args, [("linear_agent", False), ("rule_based_agent", False)])
 
 BUFFER_LEN = 12
-MAX_ROUNDS = 150
-WANT_PURE_OPPONENT_KILL = 6  # GOT_KILLED, no KILLED_SELF: the collector's own bomb got us
-WANT_MUTUAL_KILL = 0  # already understood from the first pass, skip
-WANT_PURE_SUICIDE = 0  # already understood from the first pass, skip
+MAX_ROUNDS = 40
+WANT_SELF_KILL = 4
+WANT_OPPONENT_KILL = 4
 
-got_killed_traces = []
-killed_self_traces = []
+self_kill_traces = []
+opponent_kill_traces = []
 
-out_path = os.path.join(LOG_DIR, "death_traces_pure_opponent.txt")
+out_path = os.path.join(LOG_DIR, "death_traces_rulebased.txt")
 out_f = open(out_path, "w")
 
 
@@ -80,7 +75,7 @@ def dump_trace(out_f, round_num, cause, buffer):
 
 
 round_num = 0
-while len(got_killed_traces) < WANT_PURE_OPPONENT_KILL and round_num < MAX_ROUNDS:
+while (len(self_kill_traces) < WANT_SELF_KILL or len(opponent_kill_traces) < WANT_OPPONENT_KILL) and round_num < MAX_ROUNDS:
     round_num += 1
     world.new_round()
     la = find_agent(world, "linear_agent")
@@ -92,11 +87,8 @@ while len(got_killed_traces) < WANT_PURE_OPPONENT_KILL and round_num < MAX_ROUND
         world.do_step()
         pre_state = la.last_game_state if not was_dead_before else None
         action = world.replay["actions"]["linear_agent"][-1] if world.replay["actions"]["linear_agent"] else None
-        opp_actions = world.replay["actions"].get("coin_collector_agent")
+        opp_actions = world.replay["actions"].get("rule_based_agent")
         opp_action = opp_actions[-1] if opp_actions else None
-        # only meaningful the FIRST step after death -- a dead agent's
-        # events list is not reliably reset every subsequent step, so the
-        # same death event(s) can reappear on later steps of the same round
         events_this_step = list(la.events) if (not was_dead_before) else []
         if pre_state is not None:
             buffer.append((world.step, pre_state, action, events_this_step, opp_action))
@@ -104,15 +96,20 @@ while len(got_killed_traces) < WANT_PURE_OPPONENT_KILL and round_num < MAX_ROUND
                 buffer.pop(0)
 
         if not captured_this_round:
+            is_self_kill = e.KILLED_SELF in events_this_step
             is_pure_opponent_kill = e.GOT_KILLED in events_this_step and e.KILLED_SELF not in events_this_step
-            if is_pure_opponent_kill and len(got_killed_traces) < WANT_PURE_OPPONENT_KILL:
+            if is_self_kill and len(self_kill_traces) < WANT_SELF_KILL:
+                dump_trace(out_f, round_num, "KILLED_SELF" + (" + KILLED_OPPONENT (mutual)" if e.KILLED_OPPONENT in events_this_step else ""), buffer)
+                self_kill_traces.append(round_num)
+                captured_this_round = True
+            elif is_pure_opponent_kill and len(opponent_kill_traces) < WANT_OPPONENT_KILL:
                 dump_trace(out_f, round_num, "PURE opponent-bomb kill (no KILLED_SELF)", buffer)
-                got_killed_traces.append(round_num)
+                opponent_kill_traces.append(round_num)
                 captured_this_round = True
 
 world.end()
 out_f.close()
-print("GOT_KILLED traces from rounds:", got_killed_traces)
-print("KILLED_SELF traces from rounds:", killed_self_traces)
+print("SELF_KILL traces from rounds:", self_kill_traces)
+print("OPPONENT_KILL traces from rounds:", opponent_kill_traces)
 print("total rounds simulated:", round_num)
 print("written to:", out_path)
