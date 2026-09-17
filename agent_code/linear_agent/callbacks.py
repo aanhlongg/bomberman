@@ -18,7 +18,7 @@ from .features import (
 # decaying epsilon exploration for training
 EPSILON_START = 1.0
 EPSILON_MIN = 0.05
-EPSILON_DECAY = 0.99
+EPSILON_DECAY = 0.997
 
 
 def setup(self):
@@ -61,9 +61,15 @@ def setup(self):
             "sparse_reward",
             "shaped_reward",
             "w_moves_to_coin",
-            "w_valid",
-            "w_wait",
+            "w_moves_to_crate",
+            "w_moves_to_safety",
+            "w_moves_into_lethal",
+            "w_moves_into_blast",
+            "w_bias",
+            "w_not_moving",
             "w_bomb",
+            "w_bomb_escapable",
+            "w_bomb_hits",
         ]
     )
 

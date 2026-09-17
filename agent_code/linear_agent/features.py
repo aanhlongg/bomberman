@@ -8,8 +8,25 @@ ACTIONS = ["UP", "RIGHT", "DOWN", "LEFT", "WAIT", "BOMB"]
 # image coordinates, top left is (0,0)
 DIRECTIONS = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}
 
-N_FEATURES = 4
+FEATURE_NAMES = [
+    "moves_to_coin",
+    "moves_to_crate",
+    "moves_to_safety",
+    "moves_into_lethal",
+    "moves_into_blast",
+    "bias",  # constant
+    "not_moving",  # invalid move or WAIT
+    "bomb",
+    "bomb_escapable",
+    "bomb_hits",
+]
+
+N_FEATURES = len(FEATURE_NAMES)
 GAMMA = 0.95  # discount factor
+
+# scale for the potential rewards
+COIN_POTENTIAL_SCALE = 0.25
+CRATE_POTENTIAL_SCALE = 3.0
 
 
 def state_features(game_state):
@@ -22,11 +39,7 @@ def state_features(game_state):
 
     field = game_state["field"]  # 1 for crates, -1 for stone, 0 if free
     coins = game_state["coins"]  # coin coordinate list
-
-    if coins:
-        coin_distance_map = _bfs_distance_map(field, coins)
-    else:
-        coin_distance_map = None
+    position = game_state["self"][3]
 
     others = {other[3] for other in game_state["others"]}
 
@@ -34,13 +47,30 @@ def state_features(game_state):
     for bomb_position, _ in game_state["bombs"]:
         occupied.add(bomb_position)
 
+    # agents stands on his bomb after dropping
+    blocked = occupied - {position}
+
+    # currently lethal tiles + tiles that will be lethal
+    lethal, blast = _danger_zones(game_state)
+
+    if coins:
+        coin_distance_map = _bfs_distance_map(field, coins, blocked)
+    else:
+        coin_distance_map = None
+
     return {
         "field": field,
-        "position": game_state["self"][3],
+        "position": position,
         "bomb_available": game_state["self"][2],
         "others": others,
         "occupied": occupied,
+        "lethal": lethal,
+        "blast": blast,
         "coin_distance_map": coin_distance_map,
+        "crate_distance_map": _crate_distance_map(field, blocked),
+        "safety_distance_map": _safety_distance_map(
+            field, position, lethal, blast, blocked
+        ),
     }
 
 
@@ -52,40 +82,56 @@ def state_action_features(state, action):
         return np.zeros(N_FEATURES)
 
     valid = _is_valid(state, action)
-    moves_to_coin = 0.0
+    position = state["position"]
 
-    if valid and state["coin_distance_map"] is not None:
-        position = state["position"]
+    if valid:
         new_position = _simulate_move(position, action)
+    else:
+        new_position = position
 
-        # current distance from coin on coin distance map
-        current_distance = state["coin_distance_map"][position]
-        new_distance = state["coin_distance_map"][new_position]
-
-        if new_distance < current_distance:
-            moves_to_coin = 1.0
+    escapable = 0.0
+    hits = 0.0
+    if action == "BOMB" and valid:
+        escapable = float(bomb_escapable(state))
+        hits = float(bomb_hits(state))
 
     return np.array(
         [
-            moves_to_coin,
-            float(valid),
-            1.0 if action == "WAIT" else 0.0,
+            _moves_closer(state["coin_distance_map"], position, new_position),
+            _moves_closer(state["crate_distance_map"], position, new_position),
+            _moves_closer(state["safety_distance_map"], position, new_position),
+            1.0 if new_position in state["lethal"] else 0.0,
+            1.0 if new_position in state["blast"] else 0.0,
+            1.0,  # bias
+            1.0 if new_position == position and action != "BOMB" else 0.0,
             1.0 if action == "BOMB" else 0.0,
+            escapable,
+            hits,
         ]
     )
 
 
+def _moves_closer(distance_map, position, new_position):
+    """
+    returns 1.0 if the new position is closer to the target on the distance map
+    """
+    if distance_map is None or new_position == position:
+        return 0.0
+
+    return 1.0 if distance_map[new_position] < distance_map[position] else 0.0
+
+
 def _bfs_distance_map(field, sources, occupied=()):
     """
-    return distance map for multiple sources (e.g. coins) using bfs
+    return distance map for multiple sources (e.g. coins) using bfs.
+    sources are seeded even when they are crates, which cannot be walked on
     """
     distance_map = np.full(field.shape, np.inf)
     q = deque()  # double ended queue
 
     for s in sources:
-        if field[s] == 0:
-            distance_map[s] = 0
-            q.append(s)
+        distance_map[s] = 0
+        q.append(s)
 
     while q:
         x, y = q.popleft()
@@ -102,6 +148,60 @@ def _bfs_distance_map(field, sources, occupied=()):
                 distance_map[nx, ny] = distance_map[x, y] + 1
                 q.append((nx, ny))
     return distance_map
+
+
+def _crate_distance_map(field, occupied):
+    """
+    computes distance map to nearest tile next to crate (bombing purposes)
+    """
+    crates = []
+    for crate in np.argwhere(field == 1):
+        crates.append(tuple(crate))
+
+    if not crates:
+        return None
+
+    return _bfs_distance_map(field, crates, occupied)
+
+
+def _safety_distance_map(field, position, lethal, blast, occupied):
+    """
+    computes distance map to nearest tile outside an explosion/blast zone
+    """
+    if not lethal and not blast:
+        return None
+
+    safe = [
+        tile
+        for tile in map(tuple, np.argwhere(field == 0))
+        if tile not in lethal and tile not in blast
+    ]
+
+    if not safe:
+        return None
+
+    return _bfs_distance_map(field, safe, occupied | (lethal - {position}))
+
+
+def _danger_zones(game_state):
+    """
+    computes tiles that are currently lethal, and tiles that will be lethal
+    """
+    field = game_state["field"]
+
+    lethal = set()
+    for tile in np.argwhere(game_state["explosion_map"] > 0):
+        lethal.add(tuple(tile))
+
+    blast = set()
+
+    for bomb_position, timer in game_state["bombs"]:
+        if timer == 0:
+            lethal.update(blast_coordinates(field, bomb_position))
+        else:
+            blast.update(blast_coordinates(field, bomb_position))
+
+    return lethal, blast
 
 
 def _is_valid(state, action):
@@ -148,7 +248,7 @@ def _simulate_move(position, action):
 
 def coin_potential(state):
     """
-    potential function used for reward shaping, returns negative distance to coin.
+    used for reward shaping, returns negative distance to coin.
     the reward is the discounted difference between the negative distances
     """
     if state is None or state["coin_distance_map"] is None:
@@ -157,9 +257,41 @@ def coin_potential(state):
     distance = state["coin_distance_map"][state["position"]]
 
     if np.isfinite(distance):
+        return -COIN_POTENTIAL_SCALE * distance
+    else:
+        return 0.0
+
+
+def escape_potential(state):
+    """
+    used for reward shaping, returns negative distance to the
+    nearest safe tile
+    """
+    if state is None or state["safety_distance_map"] is None:
+        return 0.0
+
+    distance = state["safety_distance_map"][state["position"]]
+
+    if np.isfinite(distance):
         return -distance
     else:
         return 0.0
+
+
+def crate_potential(state):
+    """
+    used for reward shaping, rewards the step in which a bomb
+    is dropped if it covers a crate
+    """
+    if state is None:
+        return 0.0
+
+    field = state["field"]
+
+    for tile in state["blast"]:
+        if field[tile] == 1:
+            return CRATE_POTENTIAL_SCALE
+    return 0.0
 
 
 def blast_coordinates(field, bomb_position):

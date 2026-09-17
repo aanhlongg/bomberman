@@ -1,5 +1,4 @@
 import pickle
-from collections import deque, namedtuple
 from typing import List
 
 import events as e
@@ -12,18 +11,22 @@ from .features import (
     bomb_escapable,
     bomb_hits,
     coin_potential,
-    q_values,
+    crate_potential,
+    escape_potential,
     state_action_features,
     state_features,
 )
 
-# This is only an example!
-Transition = namedtuple("Transition", ("state", "action", "next_state", "reward"))
-
 # Hyper parameters -- DO modify
-TRANSITION_HISTORY_SIZE = 3  # keep only ... last transitions
 RECORD_ENEMY_TRANSITIONS = 1.0  # record enemy transitions with probability ...
 ALPHA = 0.01  # learning rate
+
+# experience replay
+BUFFER_SIZE = 50000
+BATCH_SIZE = 32
+
+# start value for averaging
+AVERAGE_FROM_ROUND = 1000
 
 # custom events
 BOMB_NO_ESCAPE = "BOMB_NO_ESCAPE"
@@ -38,9 +41,25 @@ def setup_training(self):
 
     :param self: This object is passed to all callbacks and you can set arbitrary values.
     """
-    # Example: Setup an array that will note transition tuples
-    # (s, a, r, s')
-    self.transitions = deque(maxlen=TRANSITION_HISTORY_SIZE)
+
+    # feature vector of taken actions
+    self.buffer_features = np.zeros((BUFFER_SIZE, N_FEATURES))
+
+    # feature vector for all actions in next state
+    self.buffer_next_features = np.zeros((BUFFER_SIZE, len(ACTIONS), N_FEATURES))
+
+    # realized reward
+    self.buffer_reward = np.zeros(BUFFER_SIZE)
+
+    # stores if next state is empty (round ended)
+    self.buffer_final = np.zeros(BUFFER_SIZE, dtype=bool)
+
+    self.buffer_index = 0  # next row to be written
+    self.buffer_filled = 0  # rows written
+
+    # running sum of the late weight vectors, see end_of_round
+    self.weight_sum = np.zeros(N_FEATURES)
+    self.weight_count = 0
 
 
 def game_events_occurred(
@@ -76,13 +95,13 @@ def game_events_occurred(
     reward = reward_from_events(self, events) + potential_shaping(old_state, new_state)
     self.logger.debug(f"Reward for action {self_action}: {reward}")
 
-    # (s, a, r, s')
-    self.transitions.append(Transition(old_state, self_action, new_state, reward))
+    # (s, a, r, s'), with s' kept as the features of every action that follows it
+    next_features = []
+    for action in ACTIONS:
+        next_features.append(state_action_features(new_state, action))
 
-    # td target = reward + gamma * max(Q(s',a')) (highest q value in next state)
-    next_value = np.max(q_values(self.weights, new_state))
-    td_target = reward + GAMMA * next_value
-    sgd_update(self, old_state, self_action, td_target)
+    write_replay_buffer(self, old_state, self_action, next_features, reward, final=False)
+    replay_update(self)
 
 
 def end_of_round(self, last_game_state: dict, last_action: str, events: List[str]):
@@ -107,27 +126,62 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
     reward = reward_from_events(self, events) + potential_shaping(old_state, None)
     self.logger.debug(f"Reward for action {last_action}: {reward}")
 
-    # (s, a, r, s')
-    self.transitions.append(Transition(old_state, last_action, None, reward))
+    # target = reward, since there is no next state
+    final_features = np.zeros((len(ACTIONS), N_FEATURES))
+    write_replay_buffer(self, old_state, last_action, final_features, reward, final=True)
+    replay_update(self)
 
-    # target = reward, there is no next state
-    sgd_update(self, old_state, last_action, td_target=reward)
+    # since convergence isn't guaranteed (weights will begin to oscillate),
+    # store the average weight vector starting at episode 1000
+    if last_game_state["round"] >= AVERAGE_FROM_ROUND:
+        self.weight_sum += self.weights
+        self.weight_count += 1
 
-    # Store the model
+    model = self.weight_sum / self.weight_count if self.weight_count else self.weights
     with open("linear-model.pt", "wb") as file:
-        pickle.dump(self.weights, file)
+        pickle.dump(model, file)
 
 
-def sgd_update(self, old_state, action, td_target: float) -> None:
+def write_replay_buffer(self, old_state, action, next_features, reward: float, final: bool):
     """
-    compute one gradient descent step on the squared error between
-    td target and prediction
-
-    weights = weights + alpha * (td_target - prediction) * feature_vector
+    store one transition in the replay buffer, overwriting the oldest one once full
     """
-    features = state_action_features(old_state, action)
-    prediction = np.dot(self.weights, features)
-    self.weights += ALPHA * (td_target - prediction) * features
+    i = self.buffer_index
+
+    self.buffer_features[i] = state_action_features(old_state, action)
+    self.buffer_next_features[i] = next_features
+    self.buffer_reward[i] = reward
+    self.buffer_final[i] = final
+
+    self.buffer_index = (i + 1) % BUFFER_SIZE
+    self.buffer_filled = min(self.buffer_filled + 1, BUFFER_SIZE)
+
+
+def replay_update(self):
+    """
+    compute one gradient descent step on the squared error between td target and
+    prediction, averaged over a random minibatch of transitions
+
+    weights = weights + alpha * mean((td_target - prediction) * feature_vector)
+    """
+    if self.buffer_filled < BATCH_SIZE:
+        return
+
+    # sample random batch
+    batch = np.random.randint(0, self.buffer_filled, BATCH_SIZE)
+    features = self.buffer_features[batch]
+
+    # keep best action for each transition
+    next_values = np.max(self.buffer_next_features[batch] @ self.weights, axis=1)
+
+    # last step of round has no next state
+    next_values[self.buffer_final[batch]] = 0.0
+
+    # td target = reward + gamma * max(Q(s',a'))
+    td_targets = self.buffer_reward[batch] + GAMMA * next_values
+
+    errors = td_targets - features @ self.weights
+    self.weights += ALPHA * (errors @ features) / BATCH_SIZE
 
 
 def reward_from_events(self, events: List[str]) -> float:
@@ -136,9 +190,11 @@ def reward_from_events(self, events: List[str]) -> float:
     """
     game_rewards = {
         e.COIN_COLLECTED: 1.0,
+        e.COIN_FOUND: 1.0,
+        e.CRATE_DESTROYED: 1.5,
         e.WAITED: -0.05,
-        e.INVALID_ACTION: -0.1,
-        e.KILLED_SELF: -5.0,
+        e.INVALID_ACTION: -2.0,
+        e.KILLED_SELF: -10.0,
         BOMB_NO_ESCAPE: -5.0,
         BOMB_NO_TARGET: -2.0,
     }
@@ -153,14 +209,23 @@ def reward_from_events(self, events: List[str]) -> float:
 def potential_shaping(old_state, new_state) -> float:
     """
     potential-based reward shaping: reward = gamma * phi(s') - phi(s),
-    where phi is negative coin distance
+    where phi sums negative coin distance, negative distance to safety and the
+    payoff of a pending crate hit
     """
-    old_potential = coin_potential(old_state)
+    old_potential = (
+        coin_potential(old_state)
+        + escape_potential(old_state)
+        + crate_potential(old_state)
+    )
 
     if new_state is None:
         new_potential = 0.0
     else:
-        new_potential = coin_potential(new_state)
+        new_potential = (
+            coin_potential(new_state)
+            + escape_potential(new_state)
+            + crate_potential(new_state)
+        )
 
     return GAMMA * new_potential - old_potential
 
