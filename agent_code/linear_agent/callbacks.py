@@ -1,4 +1,3 @@
-import csv
 import os
 import pickle
 import random
@@ -7,11 +6,8 @@ import numpy as np
 
 from .features import (
     ACTIONS,
-    GAMMA,
     N_FEATURES,
-    coin_potential,
     q_values,
-    state_action_features,
     state_features,
 )
 
@@ -35,48 +31,17 @@ def setup(self):
 
     :param self: This object is passed to all callbacks and you can set arbitrary values.
     """
-    if self.train or not os.path.isfile("linear-model.pt"):
+
+    # read model from environment variable, fully trained model as default
+    model_path = os.environ.get("LINEAR_AGENT_MODEL", "linear-model.pt")
+
+    if self.train or not os.path.isfile(model_path):
         self.logger.info("Setting up model from scratch.")
         self.weights = np.zeros(N_FEATURES)
     else:
-        self.logger.info("Loading model from saved state.")
-        with open("linear-model.pt", "rb") as file:
+        self.logger.info(f"Loading model from {model_path}.")
+        with open(model_path, "rb") as file:
             self.weights = pickle.load(file)
-
-    # logging metrics for plots at every step
-    os.makedirs("metrics", exist_ok=True)
-
-    if self.train:
-        metrics_path = os.path.join("metrics", "training_log.csv")
-    else:
-        metrics_path = os.path.join("metrics", "evaluation_log.csv")
-
-    self.metrics_file = open(metrics_path, "w", newline="")
-    self.metrics_writer = csv.writer(self.metrics_file)
-    self.metrics_writer.writerow(
-        [
-            "round",
-            "step",
-            "valid",
-            "sparse_reward",
-            "shaped_reward",
-            "w_moves_to_coin",
-            "w_moves_to_crate",
-            "w_moves_to_safety",
-            "w_moves_into_lethal",
-            "w_moves_into_blast",
-            "w_bias",
-            "w_not_moving",
-            "w_bomb",
-            "w_bomb_escapable",
-            "w_bomb_hits",
-        ]
-    )
-
-    self.log_round = None
-    self.prev_state = None
-    self.prev_valid = None
-    self.prev_score = 0
 
 
 def act(self, game_state: dict) -> str:
@@ -89,7 +54,6 @@ def act(self, game_state: dict) -> str:
     :return: The action to take as a string.
     """
     state = state_features(game_state)
-    _log_previous_transition(self, game_state, state)
 
     epsilon = _epsilon(game_state["round"]) if self.train else 0.0
     if self.train and random.random() < epsilon:
@@ -102,34 +66,7 @@ def act(self, game_state: dict) -> str:
         best_move = np.argmax(values)
         action = ACTIONS[best_move]
 
-    self.log_round = game_state["round"]
-    self.prev_state = state
-    self.prev_valid = bool(state_action_features(state, action)[1])
-    self.prev_score = game_state["self"][1]
-
     return action
-
-
-def _log_previous_transition(self, game_state, state) -> None:
-    """
-    log outcome of action chosen in previous act()
-    """
-    if self.log_round != game_state["round"] or self.prev_state is None:
-        return
-
-    sparse_reward = game_state["self"][1] - self.prev_score
-    shaped_reward = GAMMA * coin_potential(state) - coin_potential(self.prev_state)
-
-    self.metrics_writer.writerow(
-        [
-            game_state["round"],
-            game_state["step"] - 1,
-            int(self.prev_valid),
-            sparse_reward,
-            shaped_reward,
-            *self.weights,
-        ]
-    )
 
 
 def _epsilon(round: int) -> float:

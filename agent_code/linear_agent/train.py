@@ -1,11 +1,16 @@
+import csv
+import os
 import pickle
+import shutil
 from typing import List
 
 import events as e
 import numpy as np
 
+from .callbacks import _epsilon
 from .features import (
     ACTIONS,
+    FEATURE_NAMES,
     GAMMA,
     N_FEATURES,
     bomb_escapable,
@@ -27,6 +32,10 @@ BATCH_SIZE = 32
 
 # start value for averaging
 AVERAGE_FROM_ROUND = 1000
+
+# model checkpoints evaluated for training curve (no exploration)
+CHECKPOINT_INTERVAL = 250
+CHECKPOINT_DIR = os.path.join("metrics", "checkpoints")
 
 # custom events
 BOMB_NO_ESCAPE = "BOMB_NO_ESCAPE"
@@ -57,9 +66,22 @@ def setup_training(self):
     self.buffer_index = 0  # next row to be written
     self.buffer_filled = 0  # rows written
 
-    # running sum of the late weight vectors, see end_of_round
     self.weight_sum = np.zeros(N_FEATURES)
     self.weight_count = 0
+
+    # log one row per round in training
+    os.makedirs("metrics", exist_ok=True)
+    self.log_file = open(os.path.join("metrics", "training_log.csv"), "w", newline="")
+    self.log_writer = csv.writer(self.log_file)
+    self.log_writer.writerow(
+        ["round", "steps", *LOGGED_EVENTS.values(), "reward", "epsilon"]
+        + [f"w_{name}" for name in FEATURE_NAMES]
+    )
+    self.round_totals = dict.fromkeys([*LOGGED_EVENTS.values(), "reward"], 0)
+
+    # checkpoint of weight vector
+    shutil.rmtree(CHECKPOINT_DIR, ignore_errors=True)
+    os.makedirs(CHECKPOINT_DIR)
 
 
 def game_events_occurred(
@@ -94,13 +116,16 @@ def game_events_occurred(
     events = events + bad_bomb_events(old_state, events)
     reward = reward_from_events(self, events) + potential_shaping(old_state, new_state)
     self.logger.debug(f"Reward for action {self_action}: {reward}")
+    count_for_training_log(self, events, reward)
 
     # (s, a, r, s'), with s' kept as the features of every action that follows it
     next_features = []
     for action in ACTIONS:
         next_features.append(state_action_features(new_state, action))
 
-    write_replay_buffer(self, old_state, self_action, next_features, reward, final=False)
+    write_replay_buffer(
+        self, old_state, self_action, next_features, reward, final=False
+    )
     replay_update(self)
 
 
@@ -125,10 +150,13 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
     events = events + bad_bomb_events(old_state, events)
     reward = reward_from_events(self, events) + potential_shaping(old_state, None)
     self.logger.debug(f"Reward for action {last_action}: {reward}")
+    count_for_training_log(self, events, reward)
 
     # target = reward, since there is no next state
     final_features = np.zeros((len(ACTIONS), N_FEATURES))
-    write_replay_buffer(self, old_state, last_action, final_features, reward, final=True)
+    write_replay_buffer(
+        self, old_state, last_action, final_features, reward, final=True
+    )
     replay_update(self)
 
     # since convergence isn't guaranteed (weights will begin to oscillate),
@@ -141,8 +169,13 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
     with open("linear-model.pt", "wb") as file:
         pickle.dump(model, file)
 
+    write_training_log(self, last_game_state)
+    save_checkpoint(self, last_game_state["round"])
 
-def write_replay_buffer(self, old_state, action, next_features, reward: float, final: bool):
+
+def write_replay_buffer(
+    self, old_state, action, next_features, reward: float, final: bool
+):
     """
     store one transition in the replay buffer, overwriting the oldest one once full
     """
@@ -243,3 +276,52 @@ def bad_bomb_events(old_state, events):
     if not bomb_hits(old_state):
         bad_events.append(BOMB_NO_TARGET)
     return bad_events
+
+
+# game events for training log
+LOGGED_EVENTS = {
+    e.COIN_COLLECTED: "coins",
+    e.INVALID_ACTION: "invalid_actions",
+    e.BOMB_DROPPED: "bombs",
+    e.CRATE_DESTROYED: "crates",
+    e.KILLED_SELF: "suicides",
+}
+
+
+def count_for_training_log(self, events, reward: float):
+    """
+    add number of (log-relevant) events and reward that occurred each step to a total
+    """
+    for event in events:
+        if event in LOGGED_EVENTS:
+            self.round_totals[LOGGED_EVENTS[event]] += 1
+    self.round_totals["reward"] += reward
+
+
+def write_training_log(self, last_game_state: dict):
+    """
+    write the total number of each occurred event (that is log-relevant) and the (non-averaged)
+    weights at the end of a round to a row
+    """
+    round_number = last_game_state["round"]
+
+    self.log_writer.writerow(
+        [round_number, last_game_state["step"]]
+        + [self.round_totals[name] for name in LOGGED_EVENTS.values()]
+        + [self.round_totals["reward"], _epsilon(round_number)]
+        + list(self.weights)
+    )
+    self.log_file.flush()
+    self.round_totals = dict.fromkeys(self.round_totals, 0)
+
+
+def save_checkpoint(self, round_number: int):
+    """
+    save the current weights (non-averaged) every CHECKPOINT_INTERVAL rounds
+    """
+    if round_number % CHECKPOINT_INTERVAL != 0:
+        return
+
+    path = os.path.join(CHECKPOINT_DIR, f"weights_{round_number}.pt")
+    with open(path, "wb") as file:
+        pickle.dump(self.weights.copy(), file)

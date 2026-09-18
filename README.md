@@ -13,7 +13,8 @@ uv run main.py play --agents linear_agent --train 1 --scenario coin-heaven --no-
 evaluate the linear agent:
 ```bash
 uv run main.py play --agents linear_agent --scenario coin-heaven # single run 
-uv run main.py play --agents linear_agent --scenario coin-heaven --no-gui --n-rounds 200 # multiple runs
+# plot training and evaluate 200 rounds
+uv run metrics/plot_metrics.py agent_code/linear_agent/metrics/training_log.csv --agent linear_agent --scenario coin-heaven --eval-rounds 200 --title "Linear agent - Task 1"
 ```
 
 ## Linear agent: Task 2 (loot-crate)
@@ -27,5 +28,6 @@ uv run main.py play --agents linear_agent --train 1 --scenario loot-crate --no-g
 evaluate the linear agent:
 ```bash
 uv run main.py play --agents linear_agent --scenario loot-crate  # single run 
-uv run main.py play --agents linear_agent --scenario loot-crate --no-gui --n-rounds 200 # multiple runs
+# plot training and evaluate 500 rounds
+uv run metrics/plot_metrics.py agent_code/linear_agent/metrics/training_log.csv --agent linear_agent --scenario loot-crate --eval-rounds 500 --title "Linear agent - Task 2"
 ```
