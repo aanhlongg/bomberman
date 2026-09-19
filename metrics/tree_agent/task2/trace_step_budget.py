@@ -21,7 +21,11 @@ Per-bomb: steps elapsed since the previous bomb's drop (the "cycle") and
 crates destroyed by it (read from the field diff when it detonates).
 
 Usage (from the repository root):
-    uv run python metrics/tree_agent/task2/trace_step_budget.py --agent tree_agent --rounds 30 [--seed 0]
+    uv run python metrics/tree_agent/task2/trace_step_budget.py --agent tree_agent --rounds 30 [--seed 0] [--json out.json]
+
+--json also writes the aggregated numbers (per-class steps/round, steps per
+bomb cycle, clears, stuck rounds, per-round records) so plot_routing.py can
+render them without re-running the trace.
 """
 
 import argparse
@@ -115,7 +119,7 @@ def features_directions():
     return [(0, -1), (0, 1), (-1, 0), (1, 0)]
 
 
-def run(agent_name, rounds, seed, scenario, verbose):
+def run(agent_name, rounds, seed, scenario, verbose, json_out=None):
     features = importlib.import_module(f"agent_code.{agent_name}.features")
     callbacks = importlib.import_module(f"agent_code.{agent_name}.callbacks")
     model_path = os.path.join(ROOT, "agent_code", agent_name, "tree-model.pt")
@@ -204,8 +208,28 @@ def run(agent_name, rounds, seed, scenario, verbose):
     print(f"full clears        {sum(1 for p in per_round if p[0] >= 50)}/{n}")
     print(f"stuck rounds       {stuck_rounds}/{n}   (>=50 steps without a coin or a bomb)")
     print("step budget (share of all steps):")
-    for cls in ["crate_walk", "coin_chase", "escape", "toward_pending", "bomb", "wait", "invalid", "other_move"]:
+    classes_order = ["crate_walk", "coin_chase", "escape", "toward_pending", "bomb", "wait", "invalid", "other_move"]
+    for cls in classes_order:
         print(f"  {cls:15s} {totals[cls]/steps_total:6.1%}  ({totals[cls]/n:5.1f} steps/round)")
+
+    if json_out:
+        import json
+        summary = {
+            "agent": agent_name, "scenario": scenario, "seed": seed, "rounds": n,
+            "coins_per_round": sum(p[0] for p in per_round) / n,
+            "crates_per_round": sum(p[1] for p in per_round) / n,
+            "bombs_per_round": sum(p[2] for p in per_round) / n,
+            "steps_per_bomb_cycle_mean": float(np.mean(cycles)) if cycles else None,
+            "steps_per_bomb_cycle_median": float(np.median(cycles)) if cycles else None,
+            "bomb_cycles": [int(c) for c in cycles],
+            "full_clears": sum(1 for p in per_round if p[0] >= 50),
+            "stuck_rounds": stuck_rounds,
+            "steps_per_round_by_class": {cls: totals[cls] / n for cls in classes_order},
+            "per_round": [{"coins": p[0], "crates": p[1], "bombs": p[2], "steps": p[3], "stuck": p[4]} for p in per_round],
+        }
+        with open(json_out, "w") as f:
+            json.dump(summary, f, indent=2)
+        print(f"wrote {json_out}")
 
 
 if __name__ == "__main__":
@@ -215,5 +239,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--scenario", default="loot-crate")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--json", default=None, help="also write the aggregated numbers to this path")
     a = parser.parse_args()
-    run(a.agent, a.rounds, a.seed, a.scenario, a.verbose)
+    run(a.agent, a.rounds, a.seed, a.scenario, a.verbose, a.json)
+
