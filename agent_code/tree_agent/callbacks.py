@@ -38,6 +38,12 @@ from .features import (
 EPSILON_START = 1.0
 EPSILON_MIN = 0.05
 EPSILON_DECAY = 0.997
+# Analysis hook: TREE_AGENT_EPSILON pins the training exploration rate (e.g.
+# 0.05 when collecting a replay buffer from an already-trained model via
+# TREE_AGENT_INIT_MODEL, so the buffer reflects that policy's states rather
+# than the round-1 random walk). Unset in normal use.
+_EPSILON_OVERRIDE = float(os.environ["TREE_AGENT_EPSILON"]) if os.environ.get("TREE_AGENT_EPSILON") else None
+
 
 # exploration action weights: UP/RIGHT/DOWN/LEFT/WAIT/BOMB, matching
 # linear_agent's own Task 2 weights (mild bias toward productive bombing)
@@ -61,12 +67,23 @@ def setup(self):
         random.seed(int(agent_seed))
         np.random.seed(int(agent_seed))
 
-    if self.train or not os.path.isfile("tree-model.pt"):
+    # Analysis hooks (both environment variables, both unset in normal use):
+    # TREE_AGENT_MODEL_PATH evaluates a specific model file (e.g. a checkpoint)
+    # instead of tree-model.pt; TREE_AGENT_INIT_MODEL starts a --train run
+    # from an existing model instead of from None (fine-tuning, or collecting
+    # a replay buffer under an already-trained policy).
+    model_path = os.environ.get("TREE_AGENT_MODEL_PATH", "tree-model.pt")
+    init_model = os.environ.get("TREE_AGENT_INIT_MODEL")
+    if self.train and init_model:
+        self.logger.info(f"Training from existing model {init_model}.")
+        with open(init_model, "rb") as file:
+            self.model = pickle.load(file)
+    elif self.train or not os.path.isfile(model_path):
         self.logger.info("Setting up model from scratch (no Fitted-Q-Iteration refit yet).")
         self.model = None
     else:
-        self.logger.info("Loading model from saved state.")
-        with open("tree-model.pt", "rb") as file:
+        self.logger.info(f"Loading model from {model_path}.")
+        with open(model_path, "rb") as file:
             self.model = pickle.load(file)
         # The feature layout is part of the model: a regressor fit on an
         # older N_FEATURES silently produces garbage (or raises deep inside
@@ -75,7 +92,8 @@ def setup(self):
         model_n_features = getattr(self.model, "n_features_in_", None)
         if model_n_features is not None and model_n_features != N_FEATURES:
             raise ValueError(
-                f"tree-model.pt was trained on {model_n_features} features but "
+                f"{model_path} was trained on {model_n_features} features but "
+
                 f"features.py now defines N_FEATURES = {N_FEATURES}. Serialized "
                 "tree models are not compatible across feature-layout changes; "
                 "retrain with --train 1."
@@ -135,6 +153,8 @@ def act(self, game_state: dict) -> str:
     _log_previous_transition(self, game_state, state)
 
     epsilon = _epsilon(game_state["round"]) if self.train else 0.0
+    if self.train and _EPSILON_OVERRIDE is not None:
+        epsilon = _EPSILON_OVERRIDE  # analysis runs (see setup): fixed exploration rate
     best_q = None
     if self.train and (self.model is None or random.random() < epsilon):
         self.logger.debug("Choosing action at random (safety-filtered).")

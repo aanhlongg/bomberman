@@ -134,34 +134,99 @@ were tried and reverted after regressing other opponents).
 
 ## tree_agent
 
-Represents `Q(s,a)` as the output of a tree-ensemble regressor (`ExtraTreesRegressor`), trained
-via Fitted Q-Iteration (Ernst, Geurts & Wehenkel, 2005) -- a batch method that periodically
-refits on an accumulated replay buffer rather than updating incrementally, so there is no
-per-step SGD update and no equivalent of `linear_agent`'s synthetic counterfactual weight-nudges.
-Danger detection, escape routing, and hunting logic are ported from `linear_agent`'s own
-(architecture-independent) implementation almost verbatim, since those are properties of the
-game state, not the function approximator; what does and doesn't transfer between the two agents
-is documented per-task in `report/report_tree_taskN_body.typ`. Like `linear_agent`, the agent
-lives entirely in three files (`agent_code/tree_agent/features.py`, `train.py`, `callbacks.py`)
-and needs no pretrained model shipped alongside them to reproduce from scratch
-(`agent_code/tree_agent/tests/` holds optional unit tests, see the Metrics section).
+Represents `Q(s,a)` as the output of a tree-ensemble regressor (`sklearn.ensemble.ExtraTreesRegressor`,
+50 trees, `min_samples_leaf = 5`) over a 16-dimensional hand-crafted state-action feature vector,
+trained by Fitted Q-Iteration (Ernst, Geurts & Wehenkel, 2005): transitions accumulate in a
+replay buffer of 100,000 transitions (250 full rounds) and every 25 rounds the whole buffer is
+batch-refit into a fresh ensemble over 3 sweeps, each sweep bootstrapping its targets
+`r + 0.95 * max_a Q(s', a)` off the previous sweep's model. As in `linear_agent`, the action is
+not a separate input: `phi(s, .)` is evaluated once per candidate action and the model predicts
+one scalar per row. The agent lives entirely in three files (`agent_code/tree_agent/features.py`,
+`train.py`, `callbacks.py`) plus the shipped model `tree-model.pt`; `agent_code/tree_agent/tests/`
+holds optional unit tests (see Metrics).
 
-Unlike `linear_agent`, the current version also carries a deterministic **navigation-target
-selector** in `features.py` (`_select_target`): each step, every visible coin and every tile a
-bomb could clear at least one crate from (and be escaped from) gets one score, and the best one
-becomes *the* target the learned Q-function's distance features and shaping potentials refer to.
-The model still chooses every action (`argmax_a Q(s,a)` over the safety-filtered actions, 16
-features per state-action pair); the selector only defines what "toward the target" means -- see
-the `_select_target` docstring and the `COIN_TARGET_VALUE` comment in `features.py`.
+**One model ships for all four tasks.** `tree-model.pt` was trained for 5,000 rounds against
+`rule_based_agent` on `classic` and is used unchanged on every scenario below.
+
+### What the agent computes each step
+
+Everything that is a property of the *game* rather than of the learner is deterministic code in
+`features.py`, shared in spirit with `linear_agent`:
+
+- **Danger and escape.** Blast simulation for every bomb, the tiles lethal this step, and a
+  bounded BFS for the shortest route out of a blast. `BOMB` is structurally invalid unless such a
+  route exists after the drop (accounting for a retaliatory bomb from a bomb-capable opponent
+  within radius 1, or 2 once that opponent has been seen bombing this round). During an escape
+  window the verified escape direction is forced. The escape search may cross another bomb's
+  blast while that bomb's timer allows, treats the tiles an opponent could step into as blocked
+  at drop time (and as a conservative first pass with fallback while escaping), and does not end
+  an escape on a tile a known-bombing, armed opponent's bomb would cover
+  (`ESCAPE_TIMING_AWARE`, `ESCAPE_AVOIDS_OPPONENT_REACH`, `ESCAPE_AVOIDS_PLAUSIBLE_OPPONENT_BLAST`).
+- **A scored navigation target** (`_select_target`). Every visible coin scores
+  `COIN_TARGET_VALUE - 0.5 * distance` (3.0 alone on the board, 9.0 while an opponent is alive --
+  contested coins are first come, first served) and every free tile a bomb would clear at least
+  one crate from -- and could be escaped from -- scores `1.5 * yield - 0.5 * distance - 1.0`.
+  Crates inside an active blast count as already gone. The best candidate is *the* target the
+  distance features, the shaping potentials and the escape tie-break refer to; opponents are not
+  targets (`OPPONENTS_AS_TARGETS = False`) -- hunting is driven by the opponent features and
+  rewards below.
+- **The safety mask** (`callbacks.py`). Both exploration and the greedy argmax skip invalid moves,
+  moves into a blast, and `BOMB` next to a bomb-capable opponent (radius 1 / 2 as above); WAIT
+  is always available. If nothing is fully safe the mask falls back to validity only.
+
+The learned part is `argmax_a Q(s,a)` over the masked actions, with `Q` fit on these features:
+
+| index | feature | index | feature |
+|---|---|---|---|
+| 0 | `moves_to_coin` (toward a coin target) | 8 | `moves_to_crate` (toward a bomb-spot target) |
+| 1 | `valid` | 9 | `moves_to_opponent` |
+| 2 | `is_wait` | 10 | `bomb_hits_opponent_if_bomb` |
+| 3 | `is_bomb` | 11 | `target_distance_after` (from the tile the action lands on) |
+| 4 | `moves_into_avoidable_danger` | 12 | `target_distance_delta` (-1 toward, +1 away, 0) |
+| 5 | `escape_exists_if_bomb` | 13 | `yield_at_landing_tile` (crates a bomb there would clear) |
+| 6 | `crate_count_if_bomb` | 14 | `bomb_cooldown` (steps until `BOMB` is available again) |
+| 7 | `escape_correct_move` | 15 | `target_is_coin` |
+
+### Training
+
+`--train 1` always starts from scratch. Exploration is epsilon-greedy over the safety mask with
+`epsilon = max(0.05, 0.997^round)`. Rewards per step: `COIN_COLLECTED +1`, `COIN_FOUND +2`,
+`CRATE_DESTROYED +1.5`, `KILLED_OPPONENT +10`, `KILLED_SELF -10`, `GOT_KILLED -10`,
+`BOMB_DROPPED -0.05`, `WAITED -0.15`, `INVALID_ACTION -0.1`; a direct `+5` on a `BOMB` that
+will hit at least one crate (`CRATE_HIT_BONUS`) or an opponent's current tile
+(`OPPONENT_HIT_BONUS`); a movement credit of `+3` for a step toward the navigation target and
+`-3` for a step away (`MOVE_TOWARD_BONUS`, antisymmetric so a two-tile oscillation nets zero);
+and potential-based shaping (Ng, Harada & Russell 1999) toward the coin or bomb-spot target,
+toward safety while inside a blast, and toward the nearest opponent (scaled by 0.2). The
+training-time escape tie-break is target-aware (`TARGET_AWARE_ESCAPE_IN_TRAINING = True`), the
+same as at evaluation. Every 250 rounds a checkpoint is written to `checkpoints/model_round_N.pt`
+(`CHECKPOINT_INTERVAL`, gitignored).
+
+Three findings shape the shipped configuration; the tools behind them are listed under Metrics:
+
+- **Training length does not matter past the first few hundred rounds.** Pure-greedy evaluation
+  of 80 checkpoints from two independent 10,000-round runs against `rule_based_agent` shows a
+  flat, noisy band from round 250 to 10,000 (score margin +0.4 to +3.4 per round, no trend); the
+  shipped model sits at the top of that band, and the best checkpoint re-evaluated on paired
+  boards is within selection noise of it (+2.69 vs +2.25 per round in 1v1, identical in the
+  free-for-all). Each refit is a fresh ensemble on the last 250 rounds of data, so a later model
+  is not a "more trained" one.
+- **Gradient boosting was measured and not adopted.** On one fixed replay buffer and identical
+  Bellman targets, `HistGradientBoostingRegressor` fits no better than ExtraTrees (held-out RMSE
+  3.24-3.29 vs 3.22), agrees less with the shipped policy, shows the same Q-inflation over 20
+  sweeps and predicts 4-12x slower; monotone constraints make the fit worse (4.79).
+- **Training-time metrics are not evaluation metrics.** Under the 0.05 exploration floor a
+  frozen greedy policy still scores; every number below is a pure-greedy (`epsilon = 0`)
+  evaluation with `--save-stats`.
+
+**Model compatibility:** `callbacks.setup` checks the loaded model's feature count against
+`N_FEATURES` and raises a `ValueError` on a mismatch instead of playing with a mismatched
+model. `TREE_AGENT_MODEL_PATH=<file>` evaluates a specific model file (e.g. a checkpoint);
+`TREE_AGENT_INIT_MODEL=<file>` starts a training run from an existing model and
+`TREE_AGENT_EPSILON=<rate>` pins its exploration rate; `REPLAY_DUMP_PATH=<file>` pickles the
+replay buffer on every refit. All four are analysis hooks and unset in normal use.
 
 ### Task 1: collecting coins
-
-train (2,000 rounds, the sweep-selected config `REFIT_INTERVAL = 25` -- see
-`metrics/tree_agent/task1/sweep.py` for the 16-configuration hyperparameter sweep behind that
-choice):
-```bash
-uv run main.py play --agents tree_agent --train 1 --scenario coin-heaven --no-gui --n-rounds 2000
-```
 
 evaluate (loads `tree-model.pt`, no exploration, no further training):
 ```bash
@@ -169,163 +234,85 @@ uv run main.py play --agents tree_agent --scenario coin-heaven # single run
 uv run main.py play --agents tree_agent --scenario coin-heaven --no-gui --n-rounds 200 --save-stats results.json # multiple runs
 ```
 
-Expected result on `coin-heaven`, averaged over a 200-round evaluation:
-
 | Metric | Value |
 |---|---|
 | Coins/round | 50.0 / 50 (100%) |
-| Invalid actions | 0 across all 200 rounds |
-| Avg. steps/round | 124.1 |
+| Invalid actions | 0 |
+| Avg. steps/round | 127.9 (30-round evaluation) |
 
-This exceeds `linear_agent`'s own Task 1 result (48.2/50, 96.4%) -- see
-`report/report_tree_task1_body.typ` for the full sweep and validation writeup. The table was
-measured with the Task 1 model of the time; the currently shipped `tree-model.pt` (the Task 4
-model, see below) reproduces it without retraining: 50.0/50, 0 invalid actions, 127.9
-steps/round over a 30-round evaluation on `coin-heaven`.
+The shipped Task 4 model is used as is; a dedicated Task 1 model (2,000 rounds on `coin-heaven`,
+the `REFIT_INTERVAL x N_ESTIMATORS` sweep behind it under `metrics/tree_agent/task1/`) reached
+the same 50.0/50 at 124.1 steps/round over 200 rounds. `linear_agent`: 48.2/50.
 
 ### Task 2: clearing crates
 
-train (1,500 rounds is what the shipped model was trained on; a 5,000-round run of the same code
-evaluated slightly *worse* -- 49.57 coins/round, 187/200 full clears, one 0-coin round -- so the
-shorter run is the one shipped):
-```bash
-uv run main.py play --agents tree_agent --train 1 --scenario loot-crate --no-gui --n-rounds 1500
-```
-
-evaluate (loads `tree-model.pt`, no exploration, no further training):
+evaluate:
 ```bash
 uv run main.py play --agents tree_agent --scenario loot-crate # single run
 uv run main.py play --agents tree_agent --scenario loot-crate --no-gui --n-rounds 200 --save-stats results.json # multiple runs
 ```
 
 Expected result on `loot-crate` (`CRATE_DENSITY = 0.75`, 50 coins hidden under crates, 400 steps
-per round), averaged over a 200-round pure-greedy evaluation of the shipped model:
+per round), 200-round pure-greedy evaluation of the shipped model:
 
 | Metric | Value |
 |---|---|
-| Coins/round | 49.95 / 50 (99.9%), no round below 46 |
-| Full-board clears (all 50 coins) | 197 / 200 (98.5%) |
-| Round length | median 352 steps (min 305) -- rounds end early once the board is clear |
-| Bombs/round | 38.4 (3.19 crates per bomb) |
-| Crates cleared/round | 122.6 |
+| Coins/round | 49.76 / 50 (99.5%) |
+| Full-board clears (all 50 coins) | 196 / 200 (98%) |
+| Round length | median 351 steps -- a round ends once the board is clear |
+| Bombs/round | 32.9 |
 | Self-kill rate | 0% |
 | Invalid actions | 0 across all 200 rounds |
-| Steps per bomb cycle | 8.9 (median 7, the physical minimum) |
 
-This beats `linear_agent`'s Task 2 result (46.7/50, ~16% full clears) and the previous
-`tree_agent` version (44.90/50, 0% full clears, 11.7 steps per bomb cycle).
-
-The table above is the Task 2 model (1,500 rounds on `loot-crate` alone). The currently shipped
-`tree-model.pt` is the Task 4 model (trained against `rule_based_agent`, see below), which clears
-`loot-crate` almost as well without ever having trained on it alone: **49.76 coins/round,
-196/200 full clears, 0 self-kills, 0 invalid actions, median 351 steps** over 200 rounds. One
-model therefore ships for all four tasks.
-
-**Model compatibility:** `callbacks.setup` checks the loaded model's feature count against
-`N_FEATURES` and raises a `ValueError` on a mismatch instead of playing with a mismatched
-model. `agent_code/tree_agent/tree-model.pt` is a 16-feature model; the archived
-`results/tree_agent/**/tree_model_*.pt` files *without* a `_v2` / `_routing` suffix are
-11-feature models from before the routing revision and will refuse to load.
+`linear_agent`: 46.7/50 with ~16% full clears. A model trained on `loot-crate` alone
+(`uv run main.py play --agents tree_agent --train 1 --scenario loot-crate --no-gui --n-rounds 1500`)
+reaches 49.95/50 with 197/200 full clears; it is archived as
+`results/tree_agent/task2/tree_model_task2_routing.pt` but not shipped, since the Task 4 model
+covers the scenario. `metrics/tree_agent/task2/trace_step_budget.py` shows where a round's steps
+go (8.9 steps per bomb cycle against a physical floor of ~7).
 
 ### Task 3: hunting opponents
 
-The Task 3 machinery is unchanged from the original port of `linear_agent`'s: `moves_to_opponent`
-and `bomb_hits_opponent_if_bomb` as features, `opponent_potential` (scaled by 0.2), and the
-`KILLED_OPPONENT` / `GOT_KILLED` / `OPPONENT_HIT_BONUS` rewards. Two things had to be settled
-before training on `classic` (9 coins, 75% crates, one opponent), both screened at 1,500 rounds
-with 100-round pure-greedy evaluations:
-
-- **Does the routing revision's movement credit break hunting?** It charges −3 for a step away
-  from the coin/crate target, which a step toward an opponent usually is. Screened against
-  `peaceful_agent`: leaving it alone 83 kills / 4 suicides per 100 rounds; exempting hunting
-  steps from the penalty 66 / 5; making opponents scored targets in `_select_target` 87 / 3
-  (value 6.0) and 91 / 7 (value 4.0). Within noise of each other, and the opponents-as-targets
-  variant was the worst of the four against `rule_based_agent`, so nothing was changed:
-  `HUNT_EXEMPT_FROM_AWAY_PENALTY` and `OPPONENTS_AS_TARGETS` in `features.py` are both off.
-  The kill reward dominates the −3 in practice.
-- **Coins are contested.** With the Task 2 balance (a coin scores `3.0 − 0.5·d`, a bomb spot
-  `1.5·yield − 0.5·d − 1.0`) the agent kept clearing crates while a coin-collecting opponent
-  harvested what it revealed, and lost the coin race (3.8-4.0 coins/round to `rule_based_agent`'s
-  ~5.0). `COIN_TARGET_VALUE_VS_OPPONENTS` (9.0, used whenever an opponent is alive; 3.0 alone)
-  fixes that: vs `rule_based_agent` 430:546 → 499:484 → **677:393** for 3.0 / 6.0 / 9.0, vs
-  `coin_collector_agent` 473:471 → 505:414 → **591:336**.
-
-train (one model per opponent, 5,000 rounds each; the shipped model is the Task 4 one below):
-```bash
-uv run main.py play --agents tree_agent peaceful_agent --train 1 --scenario classic --no-gui --n-rounds 5000
-uv run main.py play --agents tree_agent coin_collector_agent --train 1 --scenario classic --no-gui --n-rounds 5000
-```
-
-evaluate:
+evaluate (`classic`: 9 coins, 75% crates, one opponent; score = coins + 5 per kill):
 ```bash
 uv run main.py play --agents tree_agent peaceful_agent --scenario classic --no-gui --n-rounds 200 --save-stats results.json
 uv run main.py play --agents tree_agent coin_collector_agent --scenario classic --no-gui --n-rounds 200 --save-stats results.json
 ```
 
-200-round pure-greedy results (score = coins + 5 per kill):
+| Opponent | Score (ours / theirs) | Our kills | Our suicides |
+|---|---|---|---|
+| `peaceful_agent` | 2742 / 7 | 191 (95.5%) | 0 (0.0%) |
+| `coin_collector_agent` | 1187 / 656 | 10 (5.0%) | 16 (8.0%) |
 
-| Opponent | Model | Score (ours / theirs) | Our kills | Our suicides |
-|---|---|---|---|---|
-| `peaceful_agent` | dedicated (5,000 rounds) | 2653 / 13 | 174 (87.0%) | 1 (0.5%) |
-| `peaceful_agent` | **shipped Task 4 model** | **2742 / 7** | **191 (95.5%)** | **0 (0.0%)** |
-| `coin_collector_agent` | dedicated (5,000 rounds) | 1158 / 657 | 14 (7.0%) | 12 (6.0%) |
-| `coin_collector_agent` | **shipped Task 4 model** | **1187 / 656** | 10 (5.0%) | 16 (8.0%) |
-
-The Task 4 model matches or beats the dedicated Task 3 models on both opponents, so no
-per-opponent model is shipped any more; the dedicated ones are archived as
+Dedicated per-opponent models (5,000 rounds each, `--train 1` against the respective opponent)
+do not beat the shipped model -- 2653 / 13 with 174 kills vs `peaceful_agent`, 1158 / 657 with
+14 kills vs `coin_collector_agent` -- and are archived as
 `results/tree_agent/task3/tree_model_{peaceful,collector}_v2.pt`.
 
 ### Task 4: holding your own against rule_based_agent
 
-The retaliation-aware escape check and the adjacent-opponent bomb veto (radius 1, widened to 2
-once an opponent has been seen bombing) are unchanged. Death-tracing the first `rule_based_agent`
-screening run (`metrics/tree_agent/task4/death_trace.py`: 20 deaths in 60 rounds, 16 of them by
-our own bomb *with* a verified escape route at drop time) found three gaps in the escape logic
-that the pre-routing agent had as well (its 18.5% suicide rate), each now fixed behind a flag in
-`features.py`:
-
-1. `ESCAPE_TIMING_AWARE` -- another bomb's blast tiles were treated as walls in every escape
-   search, so a route that merely *crossed* a tile the opponent's bomb would hit three moves later
-   counted as "no route" and the agent stood still until its own bomb went off. A blast tile is
-   deadly only from the move its bomb detonates on, so it may be entered while there is time
-   (never as the destination).
-2. `ESCAPE_AVOIDS_OPPONENT_REACH` -- the opponent's body blocks a corridor as surely as a crate,
-   and it moves one tile per step. The drop-time check now also treats the tiles an opponent can
-   step into as blocked (if the only way out runs past the opponent, the bomb is not dropped);
-   escape routing uses the same set as a first pass and falls back to the plain search.
-3. `ESCAPE_AVOIDS_PLAUSIBLE_OPPONENT_BLAST` -- tiles a known-bombing, armed opponent's bomb would
-   cover are not accepted as escape destinations in the first pass (fallback: plain search).
-
-On the very model that had been traced, without retraining, the fixes cut deaths from 20 to 9 per
-60 rounds (own-bomb deaths 16 → 3). Retrained: suicides 23-28% → 6-14% per 100 rounds.
-
-train (5,000 rounds is what the shipped model was trained on; a 1,500-round model of the same
-code is archived alongside it and is a close second -- more kills, more suicides):
+train (this is the shipped model's training run):
 ```bash
 uv run main.py play --agents tree_agent rule_based_agent --train 1 --scenario classic --no-gui --n-rounds 5000
 ```
 
-evaluate (1v1, and the 4-player free-for-all used to check generalization):
+evaluate (1v1, and the 4-player free-for-all):
 ```bash
 uv run main.py play --agents tree_agent rule_based_agent --scenario classic --no-gui --n-rounds 200 --save-stats results.json
 uv run main.py play --agents tree_agent rule_based_agent rule_based_agent rule_based_agent --scenario classic --no-gui --n-rounds 200 --save-stats results.json
 ```
 
-200-round pure-greedy results of the shipped model (`agent_code/tree_agent/tree-model.pt`, also
-archived as `results/tree_agent/task4/tree_model_rulebased_v2.pt`), against the pre-routing
-Task 4 model's numbers:
-
 | Matchup | Score (ours / theirs) | Our kills | Our suicides |
 |---|---|---|---|
-| 1v1 vs `rule_based_agent` | **1251 / 810** (was 1122 / 906) | **27 (13.5%)** (was 12.5%) | **20 (10.0%)** (was 18.5%) |
-| 4-player FFA vs 3× `rule_based_agent` | **1073 vs ~570 avg** (was 893 vs ~563) | **79 (39.5%)** (was 28.0%) | **18 (9.0%)** (was 19.5%; the three `rule_based_agent` copies: ~43%) |
-| vs `peaceful_agent` | **2742 / 7** (was 1999 / 4) | **191 (95.5%)** (was 52.5%) | **0** (was 3.5%) |
-| vs `coin_collector_agent` | 1187 / 656 (was 1142 / 765) | 10 (5.0%) (was 16.0%) | 16 (8.0%) (was 5.0%) |
-| `loot-crate`, no opponent | 49.76 / 50 coins, 196/200 full clears | -- | 0 |
+| 1v1 vs `rule_based_agent` | 1251 / 810 | 27 (13.5%) | 20 (10.0%) |
+| 4-player FFA vs 3x `rule_based_agent` | 1073 vs ~570 avg | 79 (39.5%) | 18 (9.0%); the three `rule_based_agent` copies: ~43% |
 
-The 1,500-round model of the same code (`tree_model_rulebased_v2_1500.pt`): 1v1 1284 / 872 with
-39 kills (19.5%) and 26 suicides (13.0%); FFA 1138 with 95 kills (47.5%) and 21 suicides
-(10.5%). The 5,000-round one was chosen for its lower suicide rate.
+On fixed boards (`--seed 2`, 200 rounds): 1v1 1267 / 818, FFA 1142 vs 556. Own-bomb deaths
+against `rule_based_agent` are classified by `metrics/tree_agent/task4/death_trace.py`; the
+remaining ones are mostly an opponent bomb cutting an escape route that existed at drop time.
+The model is archived as `results/tree_agent/task4/tree_model_rulebased_v2.pt`; the best
+checkpoint of the 10,000-round runs, `tree_model_rulebased_v2_ckpt7250.pt`, is kept alongside it
+for reference (1v1 1298 / 759 on the same fixed boards, FFA 1129 vs 548).
 
 ## Metrics: reproducing our results
 
@@ -343,9 +330,9 @@ metrics/
 └── tree_agent/
     ├── refit_interval_sweep.py  # re-sweep of REFIT_INTERVAL against Task 2's own workload (negative result)
     ├── task1/                   # coin-heaven hyperparameter sweep (REFIT_INTERVAL x N_ESTIMATORS grid)
-    ├── task2/                   # EXTRA_CRATE_BONUS ablation figure
+    ├── task2/                   # step-budget trace, routing-revision figures, EXTRA_CRATE_BONUS ablation figure
     ├── task3/                   # OPPONENT_POTENTIAL_SCALE regression-fix figure + training learning curve
-    └── task4/                   # adjacent-opponent veto fix figure + 4-player FFA comparison
+    └── task4/                   # death classifier, checkpoint selection, training-trend and regressor-comparison plots, earlier Task 4 figures
 ```
 
 Each `plot_*.py` script writes its rendered figures into the matching `results/<agent>/taskN/`
@@ -361,8 +348,8 @@ results/
 └── tree_agent/
     ├── task1/   # figures referenced in report_tree_task1_body.typ
     ├── task2/   # figures referenced in report_tree_task2_body.typ
-    ├── task3/   # figures, per-opponent eval JSONs, and shipped models referenced in report_tree_task3_body.typ
-    ├── task4/   # figures, eval JSONs, and the shipped model referenced in report_tree_task4_body.typ
+    ├── task3/   # figures, per-opponent eval JSONs, and archived per-opponent models
+    ├── task4/   # figures, eval JSONs, the archived shipped model, checkpoint evaluations, the replay buffer of the regressor study
     └── refit_interval_sweep/  # per-config training JSONs from the REFIT_INTERVAL re-sweep
 ```
 
@@ -452,61 +439,54 @@ Also note `AGENT_SEED` only seeds the agent's own exploration -- it does not rep
 original run's exact crate/coin layout (that's controlled by a separate, unused `--seed` flag),
 so a regenerated `training_log.csv` will be a qualitatively similar but not byte-identical
 training run to the one the shipped model/archived eval numbers came from.
-
 ### tree_agent
 
-**Task 1** -- hyperparameter sweep behind the Task 1 heatmaps/learning curves:
+**Unit tests** (deterministic, engine-free: target selection, the routing features, the movement
+credit, the hunting flags, the escape-logic rules):
 ```bash
-uv run metrics/tree_agent/task1/sweep.py        # ~2000 rounds x 16 (REFIT_INTERVAL, N_ESTIMATORS) configurations
+uv run python -m unittest agent_code.tree_agent.tests.test_targeting -v
+```
+
+**Task 1** -- the `REFIT_INTERVAL x N_ESTIMATORS` sweep and its figures:
+```bash
+uv run metrics/tree_agent/task1/sweep.py        # ~2000 rounds x 16 configurations on coin-heaven
 uv run metrics/tree_agent/task1/plot_sweep.py   # renders the figures referenced in report_tree_task1_body.typ
 ```
 
-**Task 2** -- the per-step budget trace behind the routing revision (runs N pure-greedy rounds
-of the installed model in-process and reports where the 400 steps go: crate walking, coin
-chasing, escaping, waiting, bombing; steps per bomb cycle; full clears; stuck rounds), the
-agent's unit tests, and the `EXTRA_CRATE_BONUS` ablation figure (reads from the already-saved
-`results/tree_agent/task2/task2_final_eval_*.json` evaluation files; does not retrain anything
-itself):
+**Task 2** -- the per-step budget trace (where the 400 steps of a round go, steps per bomb cycle,
+full clears, stuck rounds) and the figures of the routing revision and of the earlier
+`EXTRA_CRATE_BONUS` ablation (both read already-saved evaluation files under
+`results/tree_agent/task2/`; nothing is retrained):
 ```bash
-uv run python metrics/tree_agent/task2/trace_step_budget.py --rounds 30   # step budget of the installed tree-model.pt on loot-crate
-uv run python -m unittest agent_code.tree_agent.tests.test_targeting -v  # target selection, features 11-15, move_bonus, hunting flags, escape fixes
-uv run metrics/tree_agent/task2/plot_task2.py   # renders config_comparison_bar.png, referenced in report_tree_task2_body.typ
+uv run python metrics/tree_agent/task2/trace_step_budget.py --rounds 30 [--json out.json]
+uv run python metrics/tree_agent/task2/plot_routing.py   # routing_*.png, referenced in report_tree_task2_body.typ
+uv run metrics/tree_agent/task2/plot_task2.py            # config_comparison_bar.png
 ```
 
-**Task 3** -- the `OPPONENT_POTENTIAL_SCALE` regression-fix figure and the `coin_collector_agent`
-training learning curve (reads from the already-saved `results/tree_agent/task3/task3_peaceful_eval*.json`
-evaluation files and the archived `training_log_collector.csv`; does not retrain anything itself).
-The per-opponent `--save-stats` evaluation JSONs and shipped models referenced in
-`report_tree_task3_body.typ` are archived directly under `results/tree_agent/task3/`:
+**Task 3** -- figures of the earlier per-opponent investigation (reads already-saved files under
+`results/tree_agent/task3/`):
 ```bash
-uv run metrics/tree_agent/task3/plot_task3.py   # renders opponent_potential_scale_fix.png and learning_curve.png, referenced in report_tree_task3_body.typ
+uv run metrics/tree_agent/task3/plot_task3.py   # opponent_potential_scale_fix.png, learning_curve.png
 ```
 
-**Task 4** -- the death trace behind the escape-logic fixes (runs N greedy rounds of the installed
-model against an opponent in-process and classifies every one of our deaths: opponent bomb, own
-bomb after an opponent bomb cut the route, own bomb with the corridor sealed by the opponent's
-body, ...), plus the adjacent-opponent veto fix comparison and the 4-player free-for-all
-comparison figures of the pre-routing model (read from already-saved
-`results/tree_agent/task4/*.json`; nothing is retrained):
+**Task 4** -- the death classifier, the training-length and regressor studies, and the earlier
+Task 4 figures:
 ```bash
-uv run python metrics/tree_agent/task4/death_trace.py --opponent rule_based_agent --rounds 60   # cause of each death of the installed tree-model.pt
-uv run metrics/tree_agent/task4/plot_task4.py   # renders adjacent_opponent_veto_fix.png, ffa_comparison.png, and regression_check.png, referenced in report_tree_task4_body.typ
+uv run python metrics/tree_agent/task4/death_trace.py --opponent rule_based_agent --rounds 60      # cause of each death of the installed model
+uv run python metrics/tree_agent/task4/plot_training_trends.py --run "run=agent_code/tree_agent"   # training-time score / suicide / round-length trends from the agent's own logs (epsilon-greedy!)
+uv run python metrics/tree_agent/task4/select_checkpoint.py --run "run=agent_code/tree_agent" --opponent rule_based_agent   # pure-greedy evaluation of every checkpoint, two stages -> greedy_vs_training_round.png
+uv run python metrics/tree_agent/task4/regressor_comparison.py --replay results/tree_agent/task4/replay_shipped_model_250rounds.pkl   # ExtraTrees vs gradient boosting on identical FQI data -> regressor_comparison.png
+uv run metrics/tree_agent/task4/plot_task4.py   # adjacent_opponent_veto_fix.png, ffa_comparison.png, regression_check.png
 ```
 
-
-**The `REFIT_INTERVAL` re-sweep** -- re-tests the Task 1 hyperparameter sweep's `REFIT_INTERVAL`
-choice against Task 2's own (much longer) round-length distribution. A negative result: 10 looked
-like a clear win in training-time metrics but caused a catastrophic pure-greedy policy collapse a
-full retrain + evaluation exposed -- reverted, 25 confirmed correct. See `train.py`'s
-`REFIT_INTERVAL` comment for the full account.
+**The `REFIT_INTERVAL` re-sweep** on `loot-crate` (a negative result: 10 looked better at training
+time and collapsed pure-greedy; 25 is the shipped value):
 ```bash
-uv run metrics/tree_agent/refit_interval_sweep.py   # ~2000 rounds x 4 REFIT_INTERVAL configurations on loot-crate
+uv run metrics/tree_agent/refit_interval_sweep.py   # ~2000 rounds x 4 REFIT_INTERVAL configurations
 ```
 
-**Important:** as with `linear_agent`, `--train 1` overwrites `agent_code/tree_agent/tree-model.pt`
-with whatever that run produces -- back up the shipped model first if you need to restore it
-afterward. The shipped `tree-model.pt` is the Task 4 model, which also covers Tasks 1-3; the
-current per-task models are archived as `results/tree_agent/task2/tree_model_task2_routing.pt`,
-`task3/tree_model_{peaceful,collector}_v2.pt` and `task4/tree_model_rulebased_v2{,_1500}.pt`.
-The archived models *without* those suffixes predate the routing revision (11 features) and
-cannot be loaded by the current code.
+**Important:** `--train 1` overwrites `agent_code/tree_agent/tree-model.pt` with whatever that run
+produces -- back up the shipped model first if you need to restore it afterward. The shipped
+model is archived as `results/tree_agent/task4/tree_model_rulebased_v2.pt`; the other archived
+models under `results/tree_agent/` are listed in the task sections above. Archived models
+*without* a `_v2` / `_routing` suffix predate the current 16-feature layout and cannot be loaded.

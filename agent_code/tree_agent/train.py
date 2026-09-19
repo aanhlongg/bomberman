@@ -28,6 +28,7 @@ Everything else is a private helper.
 """
 
 import json
+import os
 import pickle
 from collections import deque
 from typing import List
@@ -99,6 +100,21 @@ REPLAY_CAPACITY = 100_000
 # Task 1's sweep) was the thing that got fooled, not a reward term. Reverted
 # to 25, the only value validated end-to-end at pure-greedy evaluation.
 REFIT_INTERVAL = 25
+
+# Analysis-only checkpoints (mirrors linear_agent's): every CHECKPOINT_INTERVAL
+# rounds -- on a refit round, so the snapshot is a freshly fit ensemble -- the
+# model is also written to checkpoints/model_round_{N}.pt (gitignored). The
+# shipped tree-model.pt is whichever ensemble the LAST refit produced, and this
+# agent's greedy quality is not monotone in training rounds (Task 2's
+# 1,500-round model beat its 5,000-round one), so checkpoints are what let a
+# run be evaluated per round afterwards (metrics/tree_agent/task4/
+# select_checkpoint.py) instead of shipping the final draw. 0 disables.
+CHECKPOINT_INTERVAL = 250
+
+# Debug/analysis hook: if the environment variable REPLAY_DUMP_PATH is set,
+# the replay buffer is pickled there on every refit round (feeds
+# metrics/tree_agent/task4/regressor_comparison.py). No effect otherwise.
+REPLAY_DUMP_PATH = os.environ.get("REPLAY_DUMP_PATH")
 
 # Number of Fitted-Q-Iteration sweeps per refit call: each sweep refits a
 # new regressor on targets bootstrapped off the PREVIOUS sweep's regressor
@@ -418,10 +434,18 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
     round_num = int(last_game_state["round"])
     if round_num % REFIT_INTERVAL == 0 and len(self.replay) > 0:
         self.model = fitted_q_iteration(self.replay, self.model, sweeps=FQI_SWEEPS)
+        if REPLAY_DUMP_PATH:
+            with open(REPLAY_DUMP_PATH, "wb") as rf:
+                pickle.dump(list(self.replay), rf)
 
     if self.model is not None:
         with open("tree-model.pt", "wb") as file:
             pickle.dump(self.model, file)
+        if CHECKPOINT_INTERVAL and round_num % CHECKPOINT_INTERVAL == 0:
+            os.makedirs("checkpoints", exist_ok=True)
+            with open(os.path.join("checkpoints", f"model_round_{round_num}.pt"), "wb") as cf:
+                pickle.dump(self.model, cf)
+
 
 
 def fitted_q_iteration(replay, prev_model, sweeps: int):
