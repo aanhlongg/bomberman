@@ -42,7 +42,9 @@ from .features import (
     ACTIONS,
     ESCAPE_BUDGET,
     GAMMA,
+    HUNT_EXEMPT_FROM_AWAY_PENALTY,
     N_FEATURES,
+
     coin_potential,
     crate_potential,
     escape_potential,
@@ -481,13 +483,19 @@ def move_bonus(old_state, phi):
     """
     if phi[1] != 1.0 or phi[2] == 1.0 or phi[3] == 1.0:
         return 0.0
-    if phi[0] == 1.0 or phi[8] == 1.0:
+    if old_state["in_escape_window"] or old_state["target_kind"] is None:
+        return 0.0
+    # toward the selected target, whatever its kind (coin, bomb spot, or --
+    # with OPPONENTS_AS_TARGETS -- an opponent): feature 12 is the signed
+    # change in BFS distance to it, so this reproduces the original
+    # moves_to_coin / moves_to_crate rule for coin and spot targets
+    if phi[12] <= -1.0:
         return MOVE_TOWARD_BONUS
-    if not MOVE_BONUS_ANTISYMMETRIC or old_state["in_escape_window"]:
+    if not MOVE_BONUS_ANTISYMMETRIC or phi[12] < 1.0:
         return 0.0
-    if old_state["coin_distance_map"] is None and old_state["crate_distance_map"] is None:
+    if HUNT_EXEMPT_FROM_AWAY_PENALTY and phi[9] == 1.0:
         return 0.0
-    return -MOVE_TOWARD_BONUS if phi[12] >= 1.0 else 0.0
+    return -MOVE_TOWARD_BONUS
 
 
 def reward_from_events(self, events: List[str]) -> float:

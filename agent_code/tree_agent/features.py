@@ -180,6 +180,21 @@ GAMMA = 0.95  # discount factor
 # is down, and the next spot / the coin becomes the target for the escape
 # itself), and tiles inside an active blast are not candidates at all.
 COIN_TARGET_VALUE = 3.0
+# Coin value while at least one opponent is alive. On loot-crate every coin
+# is eventually ours, so a 3-crate spot two steps away rightly outranks a
+# coin four steps away. Against a coin-collecting opponent coins are
+# first-come-first-served, and the screening vs rule_based_agent showed the
+# Task 2 balance losing the coin race (3.8-4.0 coins/round to its ~5.0) while
+# we cleared crates it then harvested. Screened at 1,500 rounds / 100
+# greedy rounds vs rule_based_agent: 3.0 -> 430:546 (6 kills), 6.0 ->
+# 499:484 (6), 9.0 -> 677:393 (23 kills, 14% suicides); vs
+# coin_collector_agent: 3.0 -> 473:471, 6.0 -> 505:414. With 9.0 a coin
+# outranks a 3-crate spot under the agent's feet (3.5) out to ~11 tiles,
+# so with opponents around the agent clears crates only while no coin is
+# in reach -- and chasing contested coins is also what puts it next to a
+# bombable opponent.
+COIN_TARGET_VALUE_VS_OPPONENTS = 9.0
+
 CRATE_TARGET_VALUE = 1.5
 TARGET_DISTANCE_WEIGHT = 0.5
 BOMB_CYCLE_COST = 1.0
@@ -187,7 +202,33 @@ BOMB_CYCLE_COST = 1.0
 # accepts it and a tree can put "unreachable" on one deterministic side)
 TARGET_UNREACHABLE = float(s.COLS * s.ROWS)
 
+# --- Task 3/4: how hunting interacts with the routing revision ---
+#
+# The antisymmetric movement credit (train.move_bonus) charges -3 for a
+# step that moves away from the navigation target. A step toward an
+# opponent is, most of the time, exactly such a step -- so on its own the
+# routing revision would price hunting at -3 per step against
+# opponent_potential's +0.2 and switch it off. Two remedies, screened
+# against each other (both may be on; the second subsumes the first in
+# practice):
+#
+# HUNT_EXEMPT_FROM_AWAY_PENALTY: a step that reduces the BFS distance to
+#   the nearest opponent (moves_to_opponent == 1) is never charged the away
+#   penalty. Hunting then works exactly as in the pre-routing agent: driven
+#   by opponent_potential and the learned value of moves_to_opponent.
+# OPPONENTS_AS_TARGETS: every opponent's current tile is also a candidate
+#   in _select_target, scored OPPONENT_TARGET_VALUE - TARGET_DISTANCE_WEIGHT
+#   * distance, so hunting is routed the same way coins and bomb spots are
+#   (and earns the same +3 per step). With 6.0 an opponent six tiles away
+#   (3.0) ties a coin under the agent's nose and beats a 3-crate spot two
+#   steps away (2.5); rule_based_agent's own bomb veto still applies when
+#   the agent gets there.
+HUNT_EXEMPT_FROM_AWAY_PENALTY = False
+OPPONENTS_AS_TARGETS = False
+OPPONENT_TARGET_VALUE = 6.0
+
 # Whether the target-aware escape tie-break also runs during training (it
+
 # always runs at evaluation). The pre-routing agent kept it evaluation-only
 # (see state_features' docstring for the linear_agent history behind that
 # split). With _select_target the "next target" is known at drop time, so
@@ -249,15 +290,25 @@ def state_features(game_state, use_target_aware_escape=True, opponent_has_bombed
     # is a single-source BFS to that target tile, so everything downstream
     # (moves_to_coin / moves_to_crate, the potentials, the escape tie-break)
     # keeps its original gating on "which map is not None".
+    opponent_tiles = [other[3] for other in game_state["others"]]
     target_kind, target_tile, yield_map = _select_target(
-        field, position, coins, bomb_blasts, danger_now
+        field, position, coins, bomb_blasts, danger_now,
+        opponent_positions=opponent_tiles if OPPONENTS_AS_TARGETS else (),
+        opponents_present=bool(opponent_tiles),
     )
+
     coin_distance_map = None
     crate_distance_map = None
+    target_distance_map = None
+    if target_kind is not None:
+        target_distance_map = _bfs_distance_map(field, [target_tile])
     if target_kind == "coin":
-        coin_distance_map = _bfs_distance_map(field, [target_tile])
+        coin_distance_map = target_distance_map
     elif target_kind == "spot":
-        crate_distance_map = _bfs_distance_map(field, [target_tile])
+        crate_distance_map = target_distance_map
+    # an "opponent" target (OPPONENTS_AS_TARGETS) sets neither map: the Task 3
+    # features / potential keep their own opponent_distance_map, and only the
+    # routing block (11-12), move_bonus and the escape tie-break follow it
 
     occupied = set()
     for bomb_position, _ in game_state["bombs"]:
@@ -285,13 +336,15 @@ def state_features(game_state, use_target_aware_escape=True, opponent_has_bombed
 
     # the map guiding navigation this step (see _select_target) -- used to
     # break ties among equally-short escape routes
-    target_distance_map = None
+    escape_target_map = None
     if use_target_aware_escape or TARGET_AWARE_ESCAPE_IN_TRAINING:
-        target_distance_map = coin_distance_map if coin_distance_map is not None else crate_distance_map
+        escape_target_map = target_distance_map
+    plausible_blast = _plausible_opponent_blast(field, opponents_with_bomb, opponent_has_bombed or {})
     escape_direction, escape_distance = _compute_escape_direction(
         field, position, danger_now, bomb_blasts, bomb_timers, danger_now_budget,
-        target_distance_map, opponent_positions,
+        escape_target_map, opponent_positions, plausible_blast,
     )
+
 
     # state-level gate, not itself a weighted feature: is the agent's
     # CURRENT tile inside an active threat's blast region right now?
@@ -308,6 +361,7 @@ def state_features(game_state, use_target_aware_escape=True, opponent_has_bombed
         "crate_distance_map": crate_distance_map,
         "target_kind": target_kind,
         "target_tile": target_tile,
+        "target_distance_map": target_distance_map,
         "yield_map": yield_map,
         "bomb_cooldown": _bomb_cooldown(game_state),
         "opponent_distance_map": opponent_distance_map,
@@ -316,6 +370,7 @@ def state_features(game_state, use_target_aware_escape=True, opponent_has_bombed
         "opponent_has_bombed": opponent_has_bombed if opponent_has_bombed is not None else {},
         "danger_now": danger_now,
         "bomb_blasts": bomb_blasts,
+        "bomb_timers": bomb_timers,
         "escape_direction": escape_direction,
         "escape_distance": escape_distance,
         "in_escape_window": in_escape_window,
@@ -428,9 +483,7 @@ def state_action_features(state, action):
         escape_correct_move = 0.0
 
     # --- routing-efficiency block (11-15, see the N_FEATURES layout comment) ---
-    target_map = state["coin_distance_map"]
-    if target_map is None:
-        target_map = state["crate_distance_map"]
+    target_map = state["target_distance_map"]
     target_distance_after = _capped_distance(target_map, effective_position, TARGET_UNREACHABLE)
     target_distance_delta = target_distance_after - _capped_distance(target_map, position, TARGET_UNREACHABLE)
     yield_at_landing_tile = float(state["yield_map"].get(effective_position, 0))
@@ -458,12 +511,14 @@ def state_action_features(state, action):
 
 
 
-def _select_target(field, position, coins, bomb_blasts, danger_now):
+def _select_target(field, position, coins, bomb_blasts, danger_now, opponent_positions=(), opponents_present=False):
     """
-    Pick this step's navigation target among every visible coin and every
+    Pick this step's navigation target among every visible coin, every
     tile a bomb would clear at least one crate from (see the
     COIN_TARGET_VALUE comment for the scoring and the trace that motivated
-    it). Returns (kind, tile, yield_map) with kind in {"coin", "spot", None}
+    it) and -- if any are passed, see OPPONENTS_AS_TARGETS -- every
+    opponent's current tile, scored OPPONENT_TARGET_VALUE - weight * d.
+    Returns (kind, tile, yield_map) with kind in {"coin", "spot", "opponent", None}
     and yield_map = {tile: crates a bomb there would destroy} over the free
     tiles reachable from `position` (pending crates excluded), which
     state_action_features reads for yield_at_landing_tile.
@@ -513,7 +568,8 @@ def _select_target(field, position, coins, bomb_blasts, danger_now):
         if coin in threatened or not np.isfinite(reach[coin]):
             continue
         distance = float(reach[coin])
-        score = COIN_TARGET_VALUE - TARGET_DISTANCE_WEIGHT * distance
+        coin_value = COIN_TARGET_VALUE_VS_OPPONENTS if opponents_present else COIN_TARGET_VALUE
+        score = coin_value - TARGET_DISTANCE_WEIGHT * distance
         candidate = (score, -distance, "coin", coin)
         if best is None or candidate[:2] > best[:2]:
             best = candidate
@@ -523,6 +579,16 @@ def _select_target(field, position, coins, bomb_blasts, danger_now):
         distance = float(reach[tile])
         score = yield_map[tile] * CRATE_TARGET_VALUE - TARGET_DISTANCE_WEIGHT * distance - BOMB_CYCLE_COST
         candidate = (score, -distance, "spot", tile)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+
+    for opp in opponent_positions:
+        opp = (int(opp[0]), int(opp[1]))
+        if opp in threatened or not np.isfinite(reach[opp]):
+            continue
+        distance = float(reach[opp])
+        score = OPPONENT_TARGET_VALUE - TARGET_DISTANCE_WEIGHT * distance
+        candidate = (score, -distance, "opponent", opp)
         if best is None or candidate[:2] > best[:2]:
             best = candidate
 
@@ -726,6 +792,79 @@ def _moves_into_danger(state, effective_position):
 _RETALIATION_RADIUS_IF_NEVER_BOMBED = 1
 _RETALIATION_RADIUS_IF_HAS_BOMBED = 2
 
+# --- Task 4: three escape-logic gaps found by death-tracing the routing
+# revision against rule_based_agent (20 deaths in 60 rounds; 16 of them by
+# our own bomb with a verified escape route at drop time). Each is a flag so
+# it can be screened; each defaults on. ---
+#
+# ESCAPE_TIMING_AWARE: another bomb's blast tiles used to be treated as
+#   walls in every escape search, so a route that merely CROSSES a tile the
+#   opponent's bomb will hit in three moves was "no route" and the agent
+#   stood still until its own bomb went off. A tile inside a bomb's blast
+#   is only deadly from the move that bomb detonates on (observed timer t ->
+#   deadly at depth >= t + 1, see _threat timing in _bomb_cooldown), so it may
+#   be ENTERED at depth <= t; it is still never accepted as a destination.
+# ESCAPE_AVOIDS_OPPONENT_REACH: an opponent's body blocks a corridor as
+#   surely as a crate, and it moves one tile per step. The drop-time check
+#   (_escape_exists_after_bomb) now also treats the tiles an opponent can
+#   step into next turn as blocked -- if the only way out of the blast runs
+#   past the opponent, the bomb is not dropped. Escape routing uses the same
+#   set as a first, conservative pass and falls back to the plain search, so
+#   an escape that exists is never lost to it.
+# ESCAPE_AVOIDS_PLAUSIBLE_OPPONENT_BLAST: for an opponent that has been seen
+#   bombing this round and currently holds a bomb, tiles its bomb would cover
+#   if dropped now are not accepted as escape destinations in the first pass
+#   (fallback: plain search). Prevents "escaped into the dead-end tile next
+#   to the opponent, who then bombed". peaceful_agent never bombs, so it
+#   never enters the set.
+ESCAPE_TIMING_AWARE = True
+ESCAPE_AVOIDS_OPPONENT_REACH = True
+ESCAPE_AVOIDS_PLAUSIBLE_OPPONENT_BLAST = True
+
+
+def _blast_deadlines(bomb_blasts, bomb_timers, exclude=None):
+    """
+    {tile: last depth at which an escape route may still enter it} over every
+    bomb's blast except `exclude` -- the observed timer of the soonest bomb
+    covering the tile (see ESCAPE_TIMING_AWARE). Empty dict when timing
+    awareness is off, in which case callers keep treating the tiles as
+    forbidden.
+    """
+    deadlines = {}
+    for bomb_pos, blast in bomb_blasts.items():
+        if bomb_pos == exclude:
+            continue
+        timer = bomb_timers[bomb_pos]
+        for tile in blast:
+            deadlines[tile] = min(deadlines.get(tile, timer), timer)
+    return deadlines
+
+
+def _opponent_reach(field, opponent_positions):
+    """The opponents' tiles plus every free tile they could step onto next turn."""
+    reach = set()
+    for opp in opponent_positions:
+        opp = (int(opp[0]), int(opp[1]))
+        reach.add(opp)
+        for dx, dy in DIRECTIONS.values():
+            tile = (opp[0] + dx, opp[1] + dy)
+            if 0 <= tile[0] < field.shape[0] and 0 <= tile[1] < field.shape[1] and field[tile] == 0:
+                reach.add(tile)
+    return reach
+
+
+def _plausible_opponent_blast(field, opponents_with_bomb, opponent_has_bombed):
+    """
+    Tiles a bomb dropped RIGHT NOW by any opponent that has both been observed
+    bombing this round and currently holds a bomb would cover (see
+    ESCAPE_AVOIDS_PLAUSIBLE_OPPONENT_BLAST).
+    """
+    blast = set()
+    for name, opp_pos, opp_bomb_available in opponents_with_bomb:
+        if opp_bomb_available and opponent_has_bombed.get(name):
+            blast.update(_simulate_blast_coords(opp_pos, field))
+    return blast
+
 
 def _escape_exists_after_bomb(state, position):
     """
@@ -768,8 +907,16 @@ def _escape_exists_after_bomb(state, position):
     field = state["field"]
     new_blast = set(_simulate_blast_coords(position, field))
     forbidden = set(state["danger_now"]) | set(state["opponent_positions"])
+    if ESCAPE_AVOIDS_OPPONENT_REACH:
+        forbidden |= _opponent_reach(field, state["opponent_positions"])
+    other_blast_tiles = set()
     for blast in state["bomb_blasts"].values():
-        forbidden.update(blast)
+        other_blast_tiles.update(blast)
+    if ESCAPE_TIMING_AWARE:
+        deadlines = _blast_deadlines(state["bomb_blasts"], state["bomb_timers"])
+    else:
+        deadlines = {}
+        forbidden |= other_blast_tiles
 
     opponent_has_bombed = state["opponent_has_bombed"]
     retaliation_blast = set()
@@ -783,7 +930,9 @@ def _escape_exists_after_bomb(state, position):
         )
         if abs(opp_pos[0] - position[0]) + abs(opp_pos[1] - position[1]) <= radius:
             retaliation_blast.update(_simulate_blast_coords(opp_pos, field))
-    combined_blast = new_blast | retaliation_blast
+    # a tile inside another bomb's blast may be crossed in time but is never
+    # a place to stop
+    combined_blast = new_blast | retaliation_blast | other_blast_tiles
 
     visited = {position: 0}
     frontier = deque([position])
@@ -798,6 +947,8 @@ def _escape_exists_after_bomb(state, position):
                 continue
             if field[neighbor] != 0 or neighbor in forbidden:
                 continue
+            if neighbor in deadlines and depth + 1 > deadlines[neighbor]:
+                continue
             visited[neighbor] = depth + 1
             if neighbor not in combined_blast:
                 return True
@@ -805,7 +956,10 @@ def _escape_exists_after_bomb(state, position):
     return False
 
 
-def _bfs_first_step_out_of_blast(field, start, blast, forbidden, budget, target_distance_map=None):
+def _bfs_first_step_out_of_blast(
+    field, start, blast, forbidden, budget, target_distance_map=None,
+    deadlines=None, unsafe_destinations=frozenset(),
+):
     """
     BFS from `start`, avoiding `forbidden` tiles, over free tiles, bounded to
     `budget` moves. Returns (DIRECTION KEY, distance) for the first move
@@ -820,7 +974,14 @@ def _bfs_first_step_out_of_blast(field, start, blast, forbidden, budget, target_
     DIRECTIONS' fixed iteration order. Ported from linear_agent, where this
     meaningfully shortened the average time to fully clear a board -- see
     state_features' docstring for why it's only applied at evaluation time.
+
+    deadlines ({tile: max depth}, see _blast_deadlines) lets the route cross
+    another bomb's blast while that bomb still has time on its timer;
+    unsafe_destinations are tiles the route may pass through but never end
+    on (other bombs' blasts, a plausible opponent bomb's blast).
     """
+    if deadlines is None:
+        deadlines = {}
     visited = {start: None}  # tile -> first action taken from `start` to reach it
     depths = {start: 0}
     frontier = deque([start])
@@ -838,15 +999,18 @@ def _bfs_first_step_out_of_blast(field, start, blast, forbidden, budget, target_
                 continue
             if field[neighbor] != 0 or neighbor in forbidden:
                 continue
+            if neighbor in deadlines and depth + 1 > deadlines[neighbor]:
+                continue
             first_action = visited[current] if visited[current] is not None else action_name
             visited[neighbor] = first_action
             depths[neighbor] = depth + 1
-            if neighbor not in blast:
+            if neighbor not in blast and neighbor not in unsafe_destinations:
                 if found_depth is None:
                     found_depth = depth + 1
                 safe_candidates.append((first_action, neighbor))
                 continue
             frontier.append(neighbor)
+
 
     if not safe_candidates:
         return None, None
@@ -864,7 +1028,7 @@ def _bfs_first_step_out_of_blast(field, start, blast, forbidden, budget, target_
 
 def _compute_escape_direction(
     field, position, danger_now, bomb_blasts, bomb_timers, danger_now_budget,
-    target_distance_map=None, opponent_positions=(),
+    target_distance_map=None, opponent_positions=(), plausible_opponent_blast=frozenset(),
 ):
     """
     If the agent is currently threatened, find the shortest path to safety
@@ -881,31 +1045,59 @@ def _compute_escape_direction(
     its current tile right now, so a route planned through it isn't
     actually executable this step.
     """
+    # Two passes (see ESCAPE_AVOIDS_OPPONENT_REACH /
+    # ESCAPE_AVOIDS_PLAUSIBLE_OPPONENT_BLAST): first the conservative search
+    # that also keeps clear of the tiles an opponent can step into and of a
+    # plausible opponent bomb's blast, then -- only if that finds nothing
+    # within budget -- the plain one. The fallback guarantees this can only
+    # change WHICH verified route is taken, never lose one.
+    base_forbidden = set(danger_now) | set(opponent_positions)
+    passes = [(set(), set())]
+    conservative_forbidden = _opponent_reach(field, opponent_positions) if ESCAPE_AVOIDS_OPPONENT_REACH else set()
+    conservative_unsafe = set(plausible_opponent_blast) if ESCAPE_AVOIDS_PLAUSIBLE_OPPONENT_BLAST else set()
+    if conservative_forbidden or conservative_unsafe:
+        passes.insert(0, (conservative_forbidden, conservative_unsafe))
+
     for bomb_pos, timer in bomb_timers.items():
         blast = bomb_blasts[bomb_pos]
         if position not in blast:
             continue
         remaining_budget = timer + 1
-        forbidden = set(danger_now) | set(opponent_positions)
+        other_blast_tiles = set()
         for other_pos, other_blast in bomb_blasts.items():
             if other_pos != bomb_pos:
-                forbidden.update(other_blast)
-        first_step, distance = _bfs_first_step_out_of_blast(
-            field, position, set(blast), forbidden, remaining_budget, target_distance_map
-        )
-        if first_step is not None:
-            return first_step, distance
+                other_blast_tiles.update(other_blast)
+        deadlines = _blast_deadlines(bomb_blasts, bomb_timers, exclude=bomb_pos) if ESCAPE_TIMING_AWARE else {}
+        for extra_forbidden, extra_unsafe in passes:
+            forbidden = base_forbidden | extra_forbidden
+            if not ESCAPE_TIMING_AWARE:
+                forbidden |= other_blast_tiles
+            # the agent's own tile is never forbidden: it is standing there
+            forbidden.discard(position)
+            first_step, distance = _bfs_first_step_out_of_blast(
+                field, position, set(blast), forbidden, remaining_budget, target_distance_map,
+                deadlines=deadlines, unsafe_destinations=other_blast_tiles | extra_unsafe,
+            )
+            if first_step is not None:
+                return first_step, distance
 
     if position in danger_now:
         remaining_budget = danger_now_budget[position]
-        forbidden = set(opponent_positions)
+        all_blast_tiles = set()
         for blast in bomb_blasts.values():
-            forbidden.update(blast)
-        first_step, distance = _bfs_first_step_out_of_blast(
-            field, position, set(danger_now), forbidden, remaining_budget, target_distance_map
-        )
-        if first_step is not None:
-            return first_step, distance
+            all_blast_tiles.update(blast)
+        deadlines = _blast_deadlines(bomb_blasts, bomb_timers) if ESCAPE_TIMING_AWARE else {}
+        for extra_forbidden, extra_unsafe in passes:
+            forbidden = set(opponent_positions) | extra_forbidden
+            if not ESCAPE_TIMING_AWARE:
+                forbidden |= all_blast_tiles
+            forbidden.discard(position)
+            first_step, distance = _bfs_first_step_out_of_blast(
+                field, position, set(danger_now), forbidden, remaining_budget, target_distance_map,
+                deadlines=deadlines, unsafe_destinations=all_blast_tiles | extra_unsafe,
+            )
+            if first_step is not None:
+                return first_step, distance
 
     return None, None
 
