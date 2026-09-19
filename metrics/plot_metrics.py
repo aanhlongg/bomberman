@@ -135,7 +135,8 @@ def evaluation_summary(rounds, totals, scenario):
             f"suicides  {suicides} of {n} rounds ({100 * suicides / n:.1f}%)",
             f"invalid   {totals.get('invalid', 0) / n:6.2f} per round",
             f"bombs     {totals.get('bombs', 0) / n:6.2f} per round",
-            f"crates    {totals.get('crates', 0) / n:6.2f} per round",
+            f"crates    {totals.get('crates', 0) / n:6.2f} per round, "
+            f"{totals.get('crates', 0) / max(totals.get('bombs', 0), 1):.2f} per bomb",
         ]
     )
 

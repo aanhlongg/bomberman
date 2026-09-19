@@ -10,7 +10,7 @@ DIRECTIONS = {"UP": (0, -1), "DOWN": (0, 1), "LEFT": (-1, 0), "RIGHT": (1, 0)}
 
 FEATURE_NAMES = [
     "moves_to_coin",
-    "moves_to_crate",
+    "moves_to_bomb_spot",
     "moves_to_safety",
     "moves_into_lethal",
     "moves_into_blast",
@@ -27,6 +27,11 @@ GAMMA = 0.95  # discount factor
 # scale for the potential rewards
 COIN_POTENTIAL_SCALE = 0.25
 CRATE_POTENTIAL_SCALE = 3.0
+
+# rate to discount crate value depending on distance
+CRATE_TARGET_DISCOUNT = 0.9
+SPOT_CANDIDATES = 5  # number of best crates kept
+CRATE_HITS_SCALE = 3.0
 
 
 def state_features(game_state):
@@ -67,7 +72,7 @@ def state_features(game_state):
         "lethal": lethal,
         "blast": blast,
         "coin_distance_map": coin_distance_map,
-        "crate_distance_map": _crate_distance_map(field, blocked),
+        "bomb_spot_distance_map": _bomb_spot_distance_map(field, position, blocked),
         "safety_distance_map": _safety_distance_map(
             field, position, lethal, blast, blocked
         ),
@@ -92,13 +97,13 @@ def state_action_features(state, action):
     escapable = 0.0
     hits = 0.0
     if action == "BOMB" and valid:
-        escapable = float(bomb_escapable(state))
-        hits = float(bomb_hits(state))
+        escapable = float(bomb_escapable(state["field"], position, state["occupied"]))
+        hits = bomb_hits(state) / CRATE_HITS_SCALE
 
     return np.array(
         [
             _moves_closer(state["coin_distance_map"], position, new_position),
-            _moves_closer(state["crate_distance_map"], position, new_position),
+            _moves_closer(state["bomb_spot_distance_map"], position, new_position),
             _moves_closer(state["safety_distance_map"], position, new_position),
             1.0 if new_position in state["lethal"] else 0.0,
             1.0 if new_position in state["blast"] else 0.0,
@@ -150,18 +155,72 @@ def _bfs_distance_map(field, sources, occupied=()):
     return distance_map
 
 
-def _crate_distance_map(field, occupied):
+def _bomb_spot_distance_map(field, position, occupied):
     """
-    computes distance map to nearest tile next to crate (bombing purposes)
+    computes distance map to the tile that is worth bombing next
     """
-    crates = []
-    for crate in np.argwhere(field == 1):
-        crates.append(tuple(crate))
+    spot = _best_bomb_spot(field, position, occupied)
 
-    if not crates:
+    if spot is None:
         return None
 
-    return _bfs_distance_map(field, crates, occupied)
+    return _bfs_distance_map(field, [spot], occupied)
+
+
+def _best_bomb_spot(field, position, occupied):
+    """
+    returns the tile most worth bombing that can be escaped,
+    which is the tile that destroys most crates, discounted by distance.
+    """
+
+    # stores distance to position, inf if unreachable
+    reachable = _bfs_distance_map(field, [position], occupied)
+
+    # crate_hit_map returns crate count for each tile, if a bomb was dropped there
+    values = _crate_hit_map(field) * CRATE_TARGET_DISCOUNT**reachable
+
+    # walls have distance inf, so are discounted to 0
+    if not np.any(values > 0):
+        return None
+
+    best = np.argsort(values, axis=None)[::-1][:SPOT_CANDIDATES]
+
+    for index in best:
+        tile = np.unravel_index(index, values.shape)
+
+        if values[tile] <= 0:
+            break
+        if bomb_escapable(field, tile, occupied):
+            return tile
+
+    return None
+
+
+def _crate_hit_map(field):
+    """
+    computes for every tile how many crates a bomb dropped there would destroy
+    """
+
+    # boolean masks for walls and crates
+    crates = field == 1
+    walls = field == -1
+
+    hits = np.zeros(field.shape, dtype=int)
+
+    # shift the board in each direction in steps, increment hits if tile below is crate and origin tile is not blocked
+    for dx, dy in DIRECTIONS.values():
+        blocked = np.zeros(field.shape, dtype=bool)
+
+        for i in range(1, BOMB_POWER + 1):
+            shift = (-i * dx, -i * dy)
+
+            # increment hits by ( (crate) && (tile true in 'not blocked') )
+            hits += np.roll(crates, shift, (0, 1)) & ~blocked  # inverts blocked mask
+
+            # mark origin tile as blocked using OR
+            blocked |= np.roll(walls, shift, (0, 1))
+
+    return hits
 
 
 def _safety_distance_map(field, position, lethal, blast, occupied):
@@ -310,33 +369,51 @@ def blast_coordinates(field, bomb_position):
     return coordinates
 
 
-def bomb_escapable(state):
+def bomb_escapable(field, tile, occupied):
     """
-    checks if the a bomb at current position can be outrun
+    checks if a bomb dropped on tile can be outrun
     """
-    field = state["field"]
-    position = state["position"]
+    blast = set(blast_coordinates(field, tile))
 
-    # distance map from current position
-    distance_map = _bfs_distance_map(field, [position], occupied=state["occupied"])
+    visited = {tile}
+    q = deque([(tile, 0)])  # tile and number of steps it takes to get there
 
-    # mark all tiles within blast, from bomb at current position
-    for tile in blast_coordinates(field, position):
-        distance_map[tile] = np.inf
+    while q:
+        current, moves = q.popleft()
 
-    return bool(np.any(distance_map <= BOMB_TIMER))
+        if current not in blast:
+            return True
+
+        # still in blast coordinates, bomb timer ran out
+        if moves == BOMB_TIMER:
+            continue
+
+        for dx, dy in DIRECTIONS.values():
+            neighbour = (current[0] + dx, current[1] + dy)
+
+            if (
+                field[neighbour] == 0  # empty field
+                and neighbour not in occupied  # bomb/agent positions
+                and neighbour not in visited
+            ):
+                # add reachable tiles to visited, along with their distance
+                visited.add(neighbour)
+                q.append((neighbour, moves + 1))
+
+    return False
 
 
 def bomb_hits(state):
     """
-    returns true if a dropped bomb would hit a crate or an enemy agent
+    returns how many crates and enemy agents a dropped bomb would hit
     """
     field = state["field"]
 
+    hits = 0
     for tile in blast_coordinates(field, state["position"]):
-        if field[tile] == 1 or tile in state["others"]:
-            return True
-    return False
+        if field[tile] == 1 or tile in state["others"]:  # crate or enemy
+            hits += 1
+    return hits
 
 
 def q_values(weights, state):
