@@ -33,8 +33,7 @@ BATCH_SIZE = 32
 # start value for averaging
 AVERAGE_FROM_ROUND = 1000
 
-# model checkpoints evaluated for training curve (no exploration)
-CHECKPOINT_INTERVAL = 250
+CHECKPOINT_INTERVAL = 100
 CHECKPOINT_DIR = os.path.join("metrics", "checkpoints")
 
 # custom events
@@ -271,7 +270,9 @@ def bad_bomb_events(old_state, events):
         return []
 
     bad_events = []
-    if not bomb_escapable(old_state["field"], old_state["position"], old_state["occupied"]):
+    if not bomb_escapable(
+        old_state["field"], old_state["position"], old_state["occupied"]
+    ):
         bad_events.append(BOMB_NO_ESCAPE)
     if not bomb_hits(old_state):
         bad_events.append(BOMB_NO_TARGET)

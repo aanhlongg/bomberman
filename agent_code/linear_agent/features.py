@@ -63,6 +63,13 @@ def state_features(game_state):
     else:
         coin_distance_map = None
 
+    doomed = []  # crates that will be destroyed by a ticking bomb
+    for tile in lethal | blast:
+        if field[tile] == 1:
+            doomed.append(tile)
+
+    bomb_spot_distance_map = _bomb_spot_distance_map(field, position, blocked, doomed)
+
     return {
         "field": field,
         "position": position,
@@ -72,9 +79,9 @@ def state_features(game_state):
         "lethal": lethal,
         "blast": blast,
         "coin_distance_map": coin_distance_map,
-        "bomb_spot_distance_map": _bomb_spot_distance_map(field, position, blocked),
+        "bomb_spot_distance_map": bomb_spot_distance_map,
         "safety_distance_map": _safety_distance_map(
-            field, position, lethal, blast, blocked
+            field, position, lethal, blast, blocked, bomb_spot_distance_map
         ),
     }
 
@@ -155,11 +162,11 @@ def _bfs_distance_map(field, sources, occupied=()):
     return distance_map
 
 
-def _bomb_spot_distance_map(field, position, occupied):
+def _bomb_spot_distance_map(field, position, occupied, doomed):
     """
     computes distance map to the tile that is worth bombing next
     """
-    spot = _best_bomb_spot(field, position, occupied)
+    spot = _best_bomb_spot(field, position, occupied, doomed)
 
     if spot is None:
         return None
@@ -167,7 +174,7 @@ def _bomb_spot_distance_map(field, position, occupied):
     return _bfs_distance_map(field, [spot], occupied)
 
 
-def _best_bomb_spot(field, position, occupied):
+def _best_bomb_spot(field, position, occupied, doomed):
     """
     returns the tile most worth bombing that can be escaped,
     which is the tile that destroys most crates, discounted by distance.
@@ -177,7 +184,7 @@ def _best_bomb_spot(field, position, occupied):
     reachable = _bfs_distance_map(field, [position], occupied)
 
     # crate_hit_map returns crate count for each tile, if a bomb was dropped there
-    values = _crate_hit_map(field) * CRATE_TARGET_DISCOUNT**reachable
+    values = _crate_hit_map(field, doomed) * CRATE_TARGET_DISCOUNT**reachable
 
     # walls have distance inf, so are discounted to 0
     if not np.any(values > 0):
@@ -196,14 +203,18 @@ def _best_bomb_spot(field, position, occupied):
     return None
 
 
-def _crate_hit_map(field):
+def _crate_hit_map(field, doomed):
     """
-    computes for every tile how many crates a bomb dropped there would destroy
+    returns for every tile how many crates a bomb dropped there would destroy,
+    excluding crates that will already be destroyed by ticking bombs
     """
 
     # boolean masks for walls and crates
     crates = field == 1
     walls = field == -1
+
+    for tile in doomed:
+        crates[tile] = False
 
     hits = np.zeros(field.shape, dtype=int)
 
@@ -223,23 +234,52 @@ def _crate_hit_map(field):
     return hits
 
 
-def _safety_distance_map(field, position, lethal, blast, occupied):
+def _safety_distance_map(
+    field, position, lethal, blast, occupied, bomb_spot_distance_map=None
+):
     """
-    computes distance map to nearest tile outside an explosion/blast zone
+    computes distance map to nearest tile outside an explosion/blast zone,
+    in direction of the next optimal bomb spot
     """
     if not lethal and not blast:
         return None
 
-    safe = [
-        tile
-        for tile in map(tuple, np.argwhere(field == 0))
-        if tile not in lethal and tile not in blast
-    ]
+    safe = []
+    for tile in map(tuple, np.argwhere(field == 0)):
+        if tile not in lethal and tile not in blast:
+            safe.append(tile)
 
     if not safe:
         return None
 
-    return _bfs_distance_map(field, safe, occupied | (lethal - {position}))
+    # agents, bombs, lethal zones
+    blocked = occupied | (lethal - {position})
+    distance_from_position = _bfs_distance_map(field, [position], blocked)
+
+    reachable = []
+    for tile in safe:
+        if np.isfinite(distance_from_position[tile]):
+            reachable.append(tile)
+
+    if not reachable:
+        return None
+
+    nearest = np.inf
+    candidates = []
+
+    for tile in reachable:
+        if distance_from_position[tile] < nearest:
+            nearest = distance_from_position[tile]
+            candidates = [tile]
+        elif distance_from_position[tile] == nearest:
+            candidates.append(tile)
+
+    if bomb_spot_distance_map is None:
+        target = candidates[0]
+    else:
+        target = min(candidates, key=lambda tile: bomb_spot_distance_map[tile])
+
+    return _bfs_distance_map(field, [target], blocked)
 
 
 def _danger_zones(game_state):
@@ -414,6 +454,13 @@ def bomb_hits(state):
         if field[tile] == 1 or tile in state["others"]:  # crate or enemy
             hits += 1
     return hits
+
+
+def valid_actions(state):
+    """
+    returns boolean mask for valid actions
+    """
+    return np.array([_is_valid(state, action) for action in ACTIONS])
 
 
 def q_values(weights, state):

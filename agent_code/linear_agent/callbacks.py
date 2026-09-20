@@ -9,6 +9,7 @@ from .features import (
     N_FEATURES,
     q_values,
     state_features,
+    valid_actions,
 )
 
 # decaying epsilon exploration for training
@@ -63,6 +64,10 @@ def act(self, game_state: dict) -> str:
     else:
         self.logger.debug("Querying model for action.")
         values = q_values(self.weights, state)
+
+        # set q value of invalid action to inf
+        values[~valid_actions(state)] = -np.inf
+
         best_move = np.argmax(values)
         action = ACTIONS[best_move]
 
