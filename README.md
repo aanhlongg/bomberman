@@ -307,6 +307,8 @@ uv run main.py play --agents tree_agent rule_based_agent rule_based_agent rule_b
 | 1v1 vs `rule_based_agent` | 1251 / 810 | 27 (13.5%) | 20 (10.0%) |
 | 4-player FFA vs 3x `rule_based_agent` | 1073 vs ~570 avg | 79 (39.5%) | 18 (9.0%); the three `rule_based_agent` copies: ~43% |
 
+![shipped model vs previous Task 4 model on every matchup](results/tree_agent/task4/shipped_model_matchups.png)
+
 On fixed boards (`--seed 2`, 200 rounds): 1v1 1267 / 818, FFA 1142 vs 556. Own-bomb deaths
 against `rule_based_agent` are classified by `metrics/tree_agent/task4/death_trace.py`; the
 remaining ones are mostly an opponent bomb cutting an escape route that existed at drop time.
@@ -476,7 +478,8 @@ uv run python metrics/tree_agent/task4/death_trace.py --opponent rule_based_agen
 uv run python metrics/tree_agent/task4/plot_training_trends.py --run "run=agent_code/tree_agent"   # training-time score / suicide / round-length trends from the agent's own logs (epsilon-greedy!)
 uv run python metrics/tree_agent/task4/select_checkpoint.py --run "run=agent_code/tree_agent" --opponent rule_based_agent   # pure-greedy evaluation of every checkpoint, two stages -> greedy_vs_training_round.png
 uv run python metrics/tree_agent/task4/regressor_comparison.py --replay results/tree_agent/task4/replay_shipped_model_250rounds.pkl   # ExtraTrees vs gradient boosting on identical FQI data -> regressor_comparison.png
-uv run metrics/tree_agent/task4/plot_task4.py   # adjacent_opponent_veto_fix.png, ffa_comparison.png, regression_check.png
+uv run python metrics/tree_agent/task4/plot_shipped_model.py   # shipped_model_matchups.png: the shipped model vs the previous Task 4 model on every matchup
+uv run metrics/tree_agent/task4/plot_task4.py   # adjacent_opponent_veto_fix.png, ffa_comparison.png, regression_check.png (previous model)
 ```
 
 **The `REFIT_INTERVAL` re-sweep** on `loot-crate` (a negative result: 10 looked better at training

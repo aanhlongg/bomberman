@@ -8,20 +8,20 @@ Run from the repo root:
 Reads only already-saved data under results/tree_agent/task2/ (nothing is
 retrained or re-traced here):
 
-  routing_trace_previous_model.json / routing_trace_shipped_model.json
+  routing_trace_previous_model.json / routing_trace_task2_model.json
       -- trace_step_budget.py --json output, 100 greedy rounds each
   routing_screen_<variant>_train.json / _eval.json
       -- --save-stats of the 1,500-round screening trainings and their
          50-round pure-greedy evaluations (A control, B, C, D/D2/D3, E, G)
-  routing_final_eval200.json          -- shipped model, 200 greedy rounds
+  routing_final_eval200.json          -- Task 2 routing model, 200 greedy rounds
   task2_final_eval_v8_ablation_zero.json -- previous model, 200 greedy rounds
 
 and renders four figures next to them:
 
-  routing_step_budget.png       where the 400 steps of a round go, previous vs shipped
+  routing_step_budget.png       where the 400 steps of a round go, previous vs Task 2 routing model
   routing_screening_bar.png     coins/round + full clears per screening variant
   routing_learning_curves.png   training-time coins/round per variant (rolling mean)
-  routing_eval_distribution.png per-round coins and round length, previous vs shipped
+  routing_eval_distribution.png per-round coins and round length, previous vs Task 2 routing model
 """
 
 import json
@@ -78,7 +78,7 @@ def eval_rounds(name, agent_key=None):
 # 1. step budget: previous vs shipped
 # ---------------------------------------------------------------------------
 prev = load("routing_trace_previous_model.json")
-ship = load("routing_trace_shipped_model.json")
+ship = load("routing_trace_task2_model.json")
 classes = [
     ("coin_chase", "walking to a coin", BLUE),
     ("crate_walk", "walking to a bomb spot", AQUA),
@@ -88,7 +88,7 @@ classes = [
 ]
 
 fig, ax = plt.subplots(figsize=(8.2, 3.3))
-rows = [("previous model\n(44.6 coins/round)", prev), ("shipped model\n(50.0 coins/round)", ship)]
+rows = [(f"previous model\n({prev['coins_per_round']:.1f} coins/round)", prev), (f"Task 2 routing model\n({ship['coins_per_round']:.1f} coins/round)", ship)]
 for y, (label, trace) in enumerate(rows):
     left = 0.0
     budget = trace["steps_per_round_by_class"]
@@ -195,14 +195,14 @@ ship_agent, ship_rounds = eval_rounds("routing_final_eval200.json")
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.6, 3.4))
 bins = np.arange(29.5, 51.5, 1.0)
 ax1.hist([r["coins"] for r in prev_rounds], bins=bins, color=ORANGE, alpha=0.85, label="previous model", edgecolor=SURFACE, linewidth=1)
-ax1.hist([r["coins"] for r in ship_rounds], bins=bins, color=BLUE, alpha=0.85, label="shipped model", edgecolor=SURFACE, linewidth=1)
+ax1.hist([r["coins"] for r in ship_rounds], bins=bins, color=BLUE, alpha=0.85, label="Task 2 routing model", edgecolor=SURFACE, linewidth=1)
 ax1.set_xlabel("coins collected in the round")
 ax1.set_ylabel("rounds (of 200)")
 ax1.set_title("Coins per round", loc="left")
 ax1.legend(loc="upper left", frameon=False)
 sbins = np.arange(290, 411, 10)
 ax2.hist([r["steps"] for r in prev_rounds], bins=sbins, color=ORANGE, alpha=0.85, label="previous model", edgecolor=SURFACE, linewidth=1)
-ax2.hist([r["steps"] for r in ship_rounds], bins=sbins, color=BLUE, alpha=0.85, label="shipped model", edgecolor=SURFACE, linewidth=1)
+ax2.hist([r["steps"] for r in ship_rounds], bins=sbins, color=BLUE, alpha=0.85, label="Task 2 routing model", edgecolor=SURFACE, linewidth=1)
 ax2.set_xlabel("round length in steps (a round ends when the board is clear)")
 ax2.set_title("Round length", loc="left")
 ax2.legend(loc="upper left", frameon=False)
