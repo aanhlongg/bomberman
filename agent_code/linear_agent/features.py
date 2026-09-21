@@ -18,7 +18,8 @@ FEATURE_NAMES = [
     "not_moving",  # invalid move or WAIT
     "bomb",
     "bomb_escapable",
-    "bomb_hits",
+    "bomb_hits_crates",
+    "bomb_hits_opponents",
 ]
 
 N_FEATURES = len(FEATURE_NAMES)
@@ -32,6 +33,9 @@ CRATE_POTENTIAL_SCALE = 3.0
 CRATE_TARGET_DISCOUNT = 0.9
 SPOT_CANDIDATES = 5  # number of best crates kept
 CRATE_HITS_SCALE = 3.0
+
+# value of an opponent caught in blast zone
+OPPONENT_VALUE = 5.0
 
 
 def state_features(game_state):
@@ -68,7 +72,12 @@ def state_features(game_state):
         if field[tile] == 1:
             doomed.append(tile)
 
-    bomb_spot_distance_map = _bomb_spot_distance_map(field, position, blocked, doomed)
+    # tiles covered by another agents' bomb
+    danger = lethal | blast
+
+    bomb_spot_distance_map = _bomb_spot_distance_map(
+        field, position, blocked, doomed, others, danger
+    )
 
     return {
         "field": field,
@@ -78,6 +87,7 @@ def state_features(game_state):
         "occupied": occupied,
         "lethal": lethal,
         "blast": blast,
+        "danger": danger,
         "coin_distance_map": coin_distance_map,
         "bomb_spot_distance_map": bomb_spot_distance_map,
         "safety_distance_map": _safety_distance_map(
@@ -102,10 +112,15 @@ def state_action_features(state, action):
         new_position = position
 
     escapable = 0.0
-    hits = 0.0
+    crates_hit = 0.0
+    opponents_hit = 0.0
     if action == "BOMB" and valid:
-        escapable = float(bomb_escapable(state["field"], position, state["occupied"]))
-        hits = bomb_hits(state) / CRATE_HITS_SCALE
+        escapable = float(
+            bomb_escapable(state["field"], position, state["occupied"], state["danger"])
+        )
+        crates, opponents = bomb_hits(state)
+        crates_hit = crates / CRATE_HITS_SCALE
+        opponents_hit = float(opponents)
 
     return np.array(
         [
@@ -118,7 +133,8 @@ def state_action_features(state, action):
             1.0 if new_position == position and action != "BOMB" else 0.0,
             1.0 if action == "BOMB" else 0.0,
             escapable,
-            hits,
+            crates_hit,
+            opponents_hit,
         ]
     )
 
@@ -162,11 +178,13 @@ def _bfs_distance_map(field, sources, occupied=()):
     return distance_map
 
 
-def _bomb_spot_distance_map(field, position, occupied, doomed):
+def _bomb_spot_distance_map(
+    field, position, occupied, doomed, others, danger=frozenset()
+):
     """
     computes distance map to the tile that is worth bombing next
     """
-    spot = _best_bomb_spot(field, position, occupied, doomed)
+    spot = _best_bomb_spot(field, position, occupied, doomed, others, danger)
 
     if spot is None:
         return None
@@ -174,7 +192,7 @@ def _bomb_spot_distance_map(field, position, occupied, doomed):
     return _bfs_distance_map(field, [spot], occupied)
 
 
-def _best_bomb_spot(field, position, occupied, doomed):
+def _best_bomb_spot(field, position, occupied, doomed, others, danger=frozenset()):
     """
     returns the tile most worth bombing that can be escaped,
     which is the tile that destroys most crates, discounted by distance.
@@ -183,8 +201,8 @@ def _best_bomb_spot(field, position, occupied, doomed):
     # stores distance to position, inf if unreachable
     reachable = _bfs_distance_map(field, [position], occupied)
 
-    # crate_hit_map returns crate count for each tile, if a bomb was dropped there
-    values = _crate_hit_map(field, doomed) * CRATE_TARGET_DISCOUNT**reachable
+    # bomb_value_map returns the worth of each tile, if a bomb was dropped there
+    values = _bomb_value_map(field, doomed, others) * CRATE_TARGET_DISCOUNT**reachable
 
     # walls have distance inf, so are discounted to 0
     if not np.any(values > 0):
@@ -197,36 +215,40 @@ def _best_bomb_spot(field, position, occupied, doomed):
 
         if values[tile] <= 0:
             break
-        if bomb_escapable(field, tile, occupied):
+        if bomb_escapable(field, tile, occupied, danger):
             return tile
 
     return None
 
 
-def _crate_hit_map(field, doomed):
+def _bomb_value_map(field, doomed, others):
     """
-    returns for every tile how many crates a bomb dropped there would destroy,
+    returns for every tile a value for crates/agents that a bomb dropped there would destroy,
     excluding crates that will already be destroyed by ticking bombs
     """
 
-    # boolean masks for walls and crates
-    crates = field == 1
+    value = (field == 1).astype(float)
     walls = field == -1
 
+    # set crates that will already be destroyed by ticking bombs to 0
     for tile in doomed:
-        crates[tile] = False
+        value[tile] = 0.0
 
-    hits = np.zeros(field.shape, dtype=int)
+    # assign OPPONENT_VALUE as value to opponents
+    for tile in others:
+        value[tile] = OPPONENT_VALUE
 
-    # shift the board in each direction in steps, increment hits if tile below is crate and origin tile is not blocked
+    hits = np.zeros(field.shape)
+
+    # shift the board in each direction in steps, add the value of the tile below if the origin tile is not blocked
     for dx, dy in DIRECTIONS.values():
         blocked = np.zeros(field.shape, dtype=bool)
 
         for i in range(1, BOMB_POWER + 1):
             shift = (-i * dx, -i * dy)
 
-            # increment hits by ( (crate) && (tile true in 'not blocked') )
-            hits += np.roll(crates, shift, (0, 1)) & ~blocked  # inverts blocked mask
+            # add value ( (crate or opponent) * (tile true in 'not blocked') )
+            hits += np.roll(value, shift, (0, 1)) * ~blocked  # inverts blocked mask
 
             # mark origin tile as blocked using OR
             blocked |= np.roll(walls, shift, (0, 1))
@@ -409,9 +431,9 @@ def blast_coordinates(field, bomb_position):
     return coordinates
 
 
-def bomb_escapable(field, tile, occupied):
+def bomb_escapable(field, tile, occupied, danger=frozenset()):
     """
-    checks if a bomb dropped on tile can be outrun
+    checks if a bomb dropped on tile can be outrun.
     """
     blast = set(blast_coordinates(field, tile))
 
@@ -421,7 +443,7 @@ def bomb_escapable(field, tile, occupied):
     while q:
         current, moves = q.popleft()
 
-        if current not in blast:
+        if current not in blast and current not in danger:  # enemy blast coordinates
             return True
 
         # still in blast coordinates, bomb timer ran out
@@ -445,15 +467,19 @@ def bomb_escapable(field, tile, occupied):
 
 def bomb_hits(state):
     """
-    returns how many crates and enemy agents a dropped bomb would hit
+    returns how many crates and enemies a dropped bomb would hit
     """
     field = state["field"]
 
-    hits = 0
+    crates = 0
+    opponents = 0
+
     for tile in blast_coordinates(field, state["position"]):
-        if field[tile] == 1 or tile in state["others"]:  # crate or enemy
-            hits += 1
-    return hits
+        if field[tile] == 1:
+            crates += 1
+        elif tile in state["others"]:
+            opponents += 1
+    return crates, opponents
 
 
 def valid_actions(state):

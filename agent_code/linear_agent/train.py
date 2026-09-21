@@ -39,6 +39,7 @@ CHECKPOINT_DIR = os.path.join("metrics", "checkpoints")
 # custom events
 BOMB_NO_ESCAPE = "BOMB_NO_ESCAPE"
 BOMB_NO_TARGET = "BOMB_NO_TARGET"
+BOMB_HITS_OPPONENT = "BOMB_HITS_OPPONENT"
 
 
 def setup_training(self):
@@ -112,7 +113,7 @@ def game_events_occurred(
 
     old_state = state_features(old_game_state)
     new_state = state_features(new_game_state)
-    events = events + bad_bomb_events(old_state, events)
+    events = filter_death_events(events + bomb_events(old_state, events))
     reward = reward_from_events(self, events) + potential_shaping(old_state, new_state)
     self.logger.debug(f"Reward for action {self_action}: {reward}")
     count_for_training_log(self, events, reward)
@@ -146,7 +147,7 @@ def end_of_round(self, last_game_state: dict, last_action: str, events: List[str
     )
 
     old_state = state_features(last_game_state)
-    events = events + bad_bomb_events(old_state, events)
+    events = filter_death_events(events + bomb_events(old_state, events))
     reward = reward_from_events(self, events) + potential_shaping(old_state, None)
     self.logger.debug(f"Reward for action {last_action}: {reward}")
     count_for_training_log(self, events, reward)
@@ -227,8 +228,11 @@ def reward_from_events(self, events: List[str]) -> float:
         e.WAITED: -0.05,
         e.INVALID_ACTION: -2.0,
         e.KILLED_SELF: -10.0,
+        e.KILLED_OPPONENT: 10.0,
+        e.GOT_KILLED: -10.0,
         BOMB_NO_ESCAPE: -5.0,
         BOMB_NO_TARGET: -2.0,
+        BOMB_HITS_OPPONENT: 5.0,
     }
     reward_sum = 0.0
     for event in events:
@@ -262,21 +266,47 @@ def potential_shaping(old_state, new_state) -> float:
     return GAMMA * new_potential - old_potential
 
 
-def bad_bomb_events(old_state, events):
+def filter_death_events(events):
     """
-    returns a custom event if a bomb can't be escaped or hasn't hit anything
+    remove GOT_KILLED from game events when agent killed himself,
+    because it will appear in logs twice as GOT_KILLED and KILLED_SELF,
+    causing two penalties.
+    """
+
+    if e.KILLED_SELF in events:
+        filtered_events = []
+
+        for event in events:
+            if event != e.GOT_KILLED:
+                filtered_events.append(event)
+
+        return filtered_events
+
+    return events
+
+
+def bomb_events(old_state, events):
+    """
+    returns custom events for the bomb just dropped (escapable, hits targets or opponents)
     """
     if e.BOMB_DROPPED not in events:
         return []
 
-    bad_events = []
+    crates, opponents = bomb_hits(old_state)
+
+    bomb_events_found = []
     if not bomb_escapable(
-        old_state["field"], old_state["position"], old_state["occupied"]
+        old_state["field"],
+        old_state["position"],
+        old_state["occupied"],
+        old_state["danger"],
     ):
-        bad_events.append(BOMB_NO_ESCAPE)
-    if not bomb_hits(old_state):
-        bad_events.append(BOMB_NO_TARGET)
-    return bad_events
+        bomb_events_found.append(BOMB_NO_ESCAPE)
+    if not crates and not opponents:
+        bomb_events_found.append(BOMB_NO_TARGET)
+    if opponents:
+        bomb_events_found.append(BOMB_HITS_OPPONENT)
+    return bomb_events_found
 
 
 # game events for training log
@@ -286,6 +316,8 @@ LOGGED_EVENTS = {
     e.BOMB_DROPPED: "bombs",
     e.CRATE_DESTROYED: "crates",
     e.KILLED_SELF: "suicides",
+    e.KILLED_OPPONENT: "kills",
+    e.GOT_KILLED: "deaths",
 }
 
 
