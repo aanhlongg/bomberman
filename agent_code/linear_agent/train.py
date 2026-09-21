@@ -298,7 +298,7 @@ def bomb_events(old_state, events):
     if not bomb_escapable(
         old_state["field"],
         old_state["position"],
-        old_state["occupied"],
+        old_state["occupied"] | old_state["opponent_reach"],
         old_state["danger"],
     ):
         bomb_events_found.append(BOMB_NO_ESCAPE)

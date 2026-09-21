@@ -75,8 +75,17 @@ def state_features(game_state):
     # tiles covered by another agents' bomb
     danger = lethal | blast
 
+    # where an opponent could be standing one step from now
+    opponent_reach = set(others)
+    for other in others:
+        for dx, dy in DIRECTIONS.values():
+            neighbour = (other[0] + dx, other[1] + dy)
+            if field[neighbour] == 0:
+                opponent_reach.add(neighbour)
+    opponent_reach.discard(position)
+
     bomb_spot_distance_map = _bomb_spot_distance_map(
-        field, position, blocked, doomed, others, danger
+        field, position, blocked, doomed, others, danger, opponent_reach
     )
 
     return {
@@ -88,10 +97,11 @@ def state_features(game_state):
         "lethal": lethal,
         "blast": blast,
         "danger": danger,
+        "opponent_reach": opponent_reach,
         "coin_distance_map": coin_distance_map,
         "bomb_spot_distance_map": bomb_spot_distance_map,
         "safety_distance_map": _safety_distance_map(
-            field, position, lethal, blast, blocked, bomb_spot_distance_map
+            field, position, lethal, blast, blocked, bomb_spot_distance_map, others
         ),
     }
 
@@ -116,7 +126,12 @@ def state_action_features(state, action):
     opponents_hit = 0.0
     if action == "BOMB" and valid:
         escapable = float(
-            bomb_escapable(state["field"], position, state["occupied"], state["danger"])
+            bomb_escapable(
+                state["field"],
+                position,
+                state["occupied"] | state["opponent_reach"],
+                state["danger"],
+            )
         )
         crates, opponents = bomb_hits(state)
         crates_hit = crates / CRATE_HITS_SCALE
@@ -179,12 +194,20 @@ def _bfs_distance_map(field, sources, occupied=()):
 
 
 def _bomb_spot_distance_map(
-    field, position, occupied, doomed, others, danger=frozenset()
+    field,
+    position,
+    occupied,
+    doomed,
+    others,
+    danger=frozenset(),
+    opponent_reach=frozenset(),
 ):
     """
     computes distance map to the tile that is worth bombing next
     """
-    spot = _best_bomb_spot(field, position, occupied, doomed, others, danger)
+    spot = _best_bomb_spot(
+        field, position, occupied, doomed, others, danger, opponent_reach
+    )
 
     if spot is None:
         return None
@@ -192,7 +215,15 @@ def _bomb_spot_distance_map(
     return _bfs_distance_map(field, [spot], occupied)
 
 
-def _best_bomb_spot(field, position, occupied, doomed, others, danger=frozenset()):
+def _best_bomb_spot(
+    field,
+    position,
+    occupied,
+    doomed,
+    others,
+    danger=frozenset(),
+    opponent_reach=frozenset(),
+):
     """
     returns the tile most worth bombing that can be escaped,
     which is the tile that destroys most crates, discounted by distance.
@@ -215,7 +246,7 @@ def _best_bomb_spot(field, position, occupied, doomed, others, danger=frozenset(
 
         if values[tile] <= 0:
             break
-        if bomb_escapable(field, tile, occupied, danger):
+        if bomb_escapable(field, tile, occupied | opponent_reach, danger):
             return tile
 
     return None
@@ -257,7 +288,13 @@ def _bomb_value_map(field, doomed, others):
 
 
 def _safety_distance_map(
-    field, position, lethal, blast, occupied, bomb_spot_distance_map=None
+    field,
+    position,
+    lethal,
+    blast,
+    occupied,
+    bomb_spot_distance_map=None,
+    others=frozenset(),
 ):
     """
     computes distance map to nearest tile outside an explosion/blast zone,
