@@ -1,33 +1,3 @@
-"""
-Where do the 400 steps of a loot-crate round go? Runs N pure-greedy rounds
-of an agent IN-PROCESS (no subprocess, no GUI) and classifies every step,
-so an efficiency change can be judged by the number that actually matters
--- steps per bomb cycle -- instead of by coins/round alone.
-
-Per-step classes (mutually exclusive, checked in this order):
-  invalid        the chosen move was structurally invalid (wall/crate/bomb)
-  escape         the agent's tile was inside an active threat (in_escape_window)
-  wait           WAIT chosen while unthreatened
-  bomb           BOMB chosen
-  toward_pending a move that shortened the distance to the agent's current
-                 navigation target while that target's crate(s) sit inside
-                 an active bomb's blast -- i.e. walking back toward a crate
-                 that is about to be destroyed anyway
-  coin_chase     a move while a coin is the navigation target
-  crate_walk     a move while a crate/bomb-spot is the navigation target
-  other_move     a move with no target at all (board clear / nothing reachable)
-
-Per-bomb: steps elapsed since the previous bomb's drop (the "cycle") and
-crates destroyed by it (read from the field diff when it detonates).
-
-Usage (from the repository root):
-    uv run python metrics/tree_agent/task2/trace_step_budget.py --agent tree_agent --rounds 30 [--seed 0] [--json out.json]
-
---json also writes the aggregated numbers (per-class steps/round, steps per
-bomb cycle, clears, stuck rounds, per-round records) so plot_routing.py can
-render them without re-running the trace.
-"""
-
 import argparse
 import importlib
 import os
@@ -54,7 +24,6 @@ def make_world(agent_name, seed, scenario):
 
 
 def greedy_action(features, callbacks, model, state):
-    """The exact decision act() makes at evaluation time (no exploration)."""
     if state["in_escape_window"] and state["escape_direction"] is not None:
         return state["escape_direction"]
     values = features.q_values(model, state)
@@ -77,7 +46,6 @@ def navigation_target_kind(state):
 
 
 def crates_pending(state, field):
-    """Crates that sit inside an active bomb's blast (will be destroyed)."""
     pending = set()
     for blast in state["bomb_blasts"].values():
         for tile in blast:
@@ -87,11 +55,6 @@ def crates_pending(state, field):
 
 
 def target_tile_is_pending(state, field, pending):
-    """
-    Is the navigation target (distance-0 tile of the active map) a tile whose
-    adjacent crates are all pending? Pre-revision maps are multi-source, so
-    'the target' is the nearest distance-0 tile from the agent's position.
-    """
     dist_map = state["crate_distance_map"]
     if dist_map is None or not pending:
         return False

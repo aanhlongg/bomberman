@@ -1,30 +1,3 @@
-"""
-select_checkpoint.py -- pure-greedy evaluation of training checkpoints
-=======================================================================
-tree_agent's greedy quality is not monotone in training rounds (each Fitted
-Q-Iteration refit produces a new ensemble; the shipped tree-model.pt is
-whichever the LAST refit produced). This script evaluates every checkpoint a
-run saved (train.py: CHECKPOINT_INTERVAL -> checkpoints/model_round_N.pt) the
-way the README evaluates shipped models -- pure greedy, `main.py play` with
---save-stats -- and ranks them, in two stages so the pick is not just the
-luckiest of many noisy screens:
-
-  stage 1  every checkpoint, ROUNDS_1 rounds on the SAME boards (--seed S1),
-           ranked by score margin (ours - theirs) subject to a suicide-rate cap
-  stage 2  the top K from stage 1, ROUNDS_2 FRESH rounds (--seed S2) and,
-           for 1v1 vs rule_based_agent, the 4-player free-for-all as well
-
-and writes greedy_vs_training_round.png (stage-1 curve per run, stage-2 points)
-plus a JSON with every number. The checkpoint is evaluated in place through the
-TREE_AGENT_MODEL_PATH hook in callbacks.setup, so nothing is copied over
-tree-model.pt.
-
-Usage (from the repo root):
-    uv run python metrics/tree_agent/task4/select_checkpoint.py \
-        --run "seed 1=agent_code/tree_ab_L1" --run "seed 2=agent_code/tree_ab_L2" \
-        --opponent rule_based_agent --rounds1 50 --rounds2 200 --top 5 --jobs 4
-"""
-
 import argparse
 import json
 import os
@@ -80,7 +53,6 @@ def main():
     a = ap.parse_args()
     work = Path(a.workdir); work.mkdir(parents=True, exist_ok=True)
 
-    # ---- stage 1 --------------------------------------------------------------
     jobs = []
     for spec in a.run:
         label, path = spec.split("=", 1)
@@ -102,7 +74,6 @@ def main():
     ranked = sorted(eligible, key=lambda kr: kr[1]["margin_per_round"], reverse=True)[: a.top]
     print(f"\nstage 2: top {len(ranked)} (suicide rate <= {a.max_suicide_rate:.0%}) x {a.rounds2} fresh rounds (seed {a.seed2}) + FFA")
 
-    # ---- stage 2 --------------------------------------------------------------
     stage2 = {}
     lookup = {(label, rnd): (agent_name, ckpt) for label, agent_name, rnd, ckpt in jobs}
     with ThreadPoolExecutor(a.jobs) as pool:
@@ -122,7 +93,6 @@ def main():
     json.dump({"stage1": {f"{k[0]}@{k[1]}": v for k, v in stage1.items()}, "stage2": {f"{k[0]}@{k[1]}": v for k, v in stage2.items()}},
               open(work / "summary.json", "w"), indent=2)
 
-    # ---- figure ---------------------------------------------------------------
     labels = sorted({k[0] for k in stage1})
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.6, 6.4), sharex=True)
     for label, color in zip(labels, [BLUE, ORANGE, AQUA, YELLOW]):

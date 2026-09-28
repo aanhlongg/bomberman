@@ -1,29 +1,3 @@
-"""
-plot_routing.py -- figures for the tree_agent Task 2 routing revision
-=====================================================================
-Run from the repo root:
-
-    uv run python metrics/tree_agent/task2/plot_routing.py
-
-Reads only already-saved data under results/tree_agent/task2/ (nothing is
-retrained or re-traced here):
-
-  routing_trace_previous_model.json / routing_trace_task2_model.json
-      -- trace_step_budget.py --json output, 100 greedy rounds each
-  routing_screen_<variant>_train.json / _eval.json
-      -- --save-stats of the 1,500-round screening trainings and their
-         50-round pure-greedy evaluations (A control, B, C, D/D2/D3, E, G)
-  routing_final_eval200.json          -- Task 2 routing model, 200 greedy rounds
-  task2_final_eval_v8_ablation_zero.json -- previous model, 200 greedy rounds
-
-and renders four figures next to them:
-
-  routing_step_budget.png       where the 400 steps of a round go, previous vs Task 2 routing model
-  routing_screening_bar.png     coins/round + full clears per screening variant
-  routing_learning_curves.png   training-time coins/round per variant (rolling mean)
-  routing_eval_distribution.png per-round coins and round length, previous vs Task 2 routing model
-"""
-
 import json
 from pathlib import Path
 
@@ -34,9 +8,6 @@ RESULTS_DIR = Path("results/tree_agent/task2")
 OUT_DIR = RESULTS_DIR
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Categorical palette in fixed slot order (blue, orange, aqua, yellow, magenta,
-# green) plus ink/surface tokens; identity is never carried by color alone --
-# every figure also has a legend and/or direct labels.
 BLUE, ORANGE, AQUA, YELLOW, MAGENTA, GREEN = "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"
 INK, INK_2, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#8a8985", "#e6e5e1", "#fcfcfb"
 
@@ -67,16 +38,23 @@ def load(name):
     return json.load(open(RESULTS_DIR / name))
 
 
+def round_num(key: str) -> int:
+  
+    return int(key.split()[1])
+
+
+def rounds_in_order(by_round):
+
+    return [v for _k, v in sorted(by_round.items(), key=lambda kv: round_num(kv[0]))]
+
+
 def eval_rounds(name, agent_key=None):
     d = load(name)
     agent = d["by_agent"][agent_key] if agent_key else next(iter(d["by_agent"].values()))
-    rounds = list(d["by_round"].values())
+    rounds = rounds_in_order(d["by_round"])
     return agent, rounds
 
 
-# ---------------------------------------------------------------------------
-# 1. step budget: previous vs shipped
-# ---------------------------------------------------------------------------
 prev = load("routing_trace_previous_model.json")
 ship = load("routing_trace_task2_model.json")
 classes = [
@@ -113,9 +91,6 @@ fig.tight_layout()
 fig.savefig(OUT_DIR / "routing_step_budget.png", bbox_inches="tight")
 plt.close(fig)
 
-# ---------------------------------------------------------------------------
-# 2. screening: coins/round and full clears per variant (one axis)
-# ---------------------------------------------------------------------------
 variants = [
     ("A", "previous code\n(control)", MUTED),
     ("B", "(1)+(2)\ntargeting +\nfeatures", INK_2),
@@ -153,12 +128,9 @@ fig.tight_layout()
 fig.savefig(OUT_DIR / "routing_screening_bar.png", bbox_inches="tight")
 plt.close(fig)
 
-# ---------------------------------------------------------------------------
-# 3. training-time learning curves (rolling mean of coins/round)
-# ---------------------------------------------------------------------------
 def training_curve(key, window=50):
     d = load(f"routing_screen_{key}_train.json")
-    coins = np.array([r["coins"] for r in d["by_round"].values()], dtype=float)
+    coins = np.array([r["coins"] for r in rounds_in_order(d["by_round"])], dtype=float)
     kernel = np.ones(window) / window
     smoothed = np.convolve(coins, kernel, mode="valid")
     return np.arange(window, len(coins) + 1), smoothed
@@ -187,9 +159,6 @@ fig.tight_layout()
 fig.savefig(OUT_DIR / "routing_learning_curves.png", bbox_inches="tight")
 plt.close(fig)
 
-# ---------------------------------------------------------------------------
-# 4. per-round distributions: previous vs shipped model (200 greedy rounds each)
-# ---------------------------------------------------------------------------
 prev_agent, prev_rounds = eval_rounds("task2_final_eval_v8_ablation_zero.json")
 ship_agent, ship_rounds = eval_rounds("routing_final_eval200.json")
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.6, 3.4))

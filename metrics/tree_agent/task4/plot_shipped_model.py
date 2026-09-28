@@ -1,17 +1,3 @@
-"""
-plot_shipped_model.py -- the shipped tree_agent model across every matchup
-===========================================================================
-Run from the repo root:
-
-    uv run python metrics/tree_agent/task4/plot_shipped_model.py
-
-Reads the archived 200-round pure-greedy evaluations under results/tree_agent/task4/
-(nothing is re-run) and renders shipped_model_matchups.png: score per round, kill
-rate and own-bomb suicide rate of the shipped model (5,000 rounds vs rule_based_agent,
-the routing revision + Task 4 escape fixes) against the previous Task 4 model, on
-1v1 vs rule_based_agent, the 4-player free-for-all, and the two Task 3 opponents.
-"""
-
 import json
 from pathlib import Path
 

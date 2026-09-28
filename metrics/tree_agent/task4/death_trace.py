@@ -1,27 +1,3 @@
-"""
-death_trace.py -- why does tree_agent die against an opponent?
-================================================================
-Runs N pure-greedy rounds of an agent against one opponent IN-PROCESS and,
-every time our agent dies, classifies the cause from the last few steps'
-states (escape window, verified escape direction, opponent position, bombs):
-
-  killed by opponent bomb
-  own bomb: escape route lost after opponent bomb   (a route existed at drop
-                                                     time; an opponent bomb
-                                                     then cut it)
-  own bomb: no escape route found                   (the opponent's body
-                                                     sealed the corridor)
-  own bomb: did not follow escape direction         (policy error)
-  own bomb: followed route but still died           (anything else)
-
-and prints the first few own-bomb deaths step by step. This is the trace
-behind the three escape-logic fixes in features.py (ESCAPE_TIMING_AWARE,
-ESCAPE_AVOIDS_OPPONENT_REACH, ESCAPE_AVOIDS_PLAUSIBLE_OPPONENT_BLAST).
-
-Usage (from the repository root):
-    uv run python metrics/tree_agent/task4/death_trace.py --agent tree_agent --opponent rule_based_agent --rounds 60
-"""
-
 import argparse
 import importlib
 import os

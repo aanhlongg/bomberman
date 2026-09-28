@@ -1,28 +1,4 @@
-"""
-plot_sweep.py -- Comparison plots across the tree_agent Task 1 FQI hyperparameter sweep
-==========================================================================================
-Run from anywhere after sweep.py has finished (self-locating, resolves the
-repo root from its own file path):
 
-    uv run metrics/tree_agent/task1/plot_sweep.py
-
-Expects CSVs at:  results/tree_agent/task1/log_ri{refit_interval}_ne{n_estimators}.csv
-Saves figures to: results/tree_agent/task1/
-
-Produces 6 figures, mirroring metrics/linear_agent/task1/plot_sweep.py's structure
-(REFIT_INTERVAL playing alpha's role -- one subplot per value -- and N_ESTIMATORS
-playing gamma's role -- one line per value within each subplot):
-  1. learning_curves_coins.png     -- smoothed coins/round per (REFIT_INTERVAL, N_ESTIMATORS)
-  2. learning_curves_reward.png    -- smoothed sparse reward per (REFIT_INTERVAL, N_ESTIMATORS)
-  3. heatmap_final_coins.png       -- REFIT_INTERVAL x N_ESTIMATORS heatmap, final avg coins
-  4. heatmap_invalid_actions.png   -- REFIT_INTERVAL x N_ESTIMATORS heatmap, final avg invalid actions
-  5. refit_interval_comparison.png -- all REFIT_INTERVAL values at the best N_ESTIMATORS on one axis
-  6. best_q_evolution.png          -- mean predicted Q(s, greedy action) trajectory for all configs
-                                       (the tree-ensemble analogue of linear_agent's
-                                       w_moves_to_coin weight-evolution plot -- there's no
-                                       single interpretable weight here, so this tracks the
-                                       model's own value estimates converging instead)
-"""
 
 from __future__ import annotations
 
@@ -37,15 +13,13 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# ── Config ────────────────────────────────────────────────────────────────────
 
-SWEEP_DIR   = REPO_ROOT / "results" / "tree_agent" / "task1"  # where sweep.py saved the CSVs
-OUT_DIR     = REPO_ROOT / "results" / "tree_agent" / "task1"  # where to save figures
-SMOOTH_WIN  = 50   # rolling average window
-FINAL_WIN   = 100  # last N rounds for "final performance"
-N_COINS_MAX = 50   # coin-heaven maximum
+SWEEP_DIR   = REPO_ROOT / "results" / "tree_agent" / "task1"
+OUT_DIR     = REPO_ROOT / "results" / "tree_agent" / "task1"
+SMOOTH_WIN  = 50
+FINAL_WIN   = 100
+N_COINS_MAX = 50
 
-# Colours: one per N_ESTIMATORS value (4 values -> 4 colours)
 NE_COLORS = ["#2196F3", "#4CAF50", "#FF9800", "#E91E63"]
 NE_STYLES = ["-", "--", "-.", ":"]
 
@@ -61,19 +35,9 @@ plt.rcParams.update({
 })
 
 
-# ── Load per-round episodes from one CSV ─────────────────────────────────────
 
 def load_episodes(csv_path: str | Path) -> dict:
-    """
-    Aggregate per-step CSV rows into per-round dicts. tree_agent's
-    training_log.csv columns: round, step, valid, has_model, sparse_reward,
-    shaped_reward, best_q. sparse_reward is the per-step game-score delta
-    (coins are worth 1 score point each, and Task 1 has no other
-    score-earning event), so summing it per round gives coins collected
-    that round -- same derivation linear_agent's load_episodes uses.
-    best_q is blank during random-exploration steps and before the first
-    Fitted-Q-Iteration refit; only numeric values are averaged in.
-    """
+
     episodes = defaultdict(lambda: {
         "sparse": 0.0,
         "shaped": 0.0,
@@ -96,15 +60,9 @@ def load_episodes(csv_path: str | Path) -> dict:
     return episodes
 
 
-# ── Load all sweep CSVs ───────────────────────────────────────────────────────
 
 def load_all_results(sweep_dir: Path) -> list[dict]:
-    """
-    Find every log_ri{refit_interval}_ne{n_estimators}.csv in sweep_dir.
-    Returns a list of result dicts, each with keys:
-        refit_interval, n_estimators, rounds, coins, sparse, shaped,
-        invalid, steps, best_q
-    """
+
     results = []
     pattern = re.compile(r"log_ri(\d+)_ne(\d+)\.csv")
 
@@ -138,12 +96,9 @@ def load_all_results(sweep_dir: Path) -> list[dict]:
     return results
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _smooth(values: list, window: int) -> np.ndarray:
     arr = np.array(values, dtype=float)
-    # best_q has leading NaNs (no model yet) -- nan-safe convolution via
-    # pandas-free rolling mean over a fixed window, ignoring NaNs
     if np.isnan(arr).any():
         out = np.full_like(arr, np.nan)
         for i in range(len(arr)):
@@ -159,7 +114,9 @@ def _smooth(values: list, window: int) -> np.ndarray:
 
 
 def _fmt_ep(x, _):
-    return f"{int(x/1000)}k" if x >= 1000 else str(int(x))
+    if x < 1000:
+        return str(int(x))
+    return f"{x/1000:g}k"
 
 
 def _unique_sorted(results, key):
@@ -173,7 +130,6 @@ def _find(results, refit_interval, n_estimators):
     )
 
 
-# ── Plot 1 & 2: Learning curves ───────────────────────────────────────────────
 
 def plot_learning_curves(
     results: list[dict],
@@ -184,7 +140,7 @@ def plot_learning_curves(
     hline: float | None = None,
     hline_label: str = "",
 ):
-    """2x2 grid: one subplot per REFIT_INTERVAL, one line per N_ESTIMATORS."""
+
     refit_intervals = _unique_sorted(results, "refit_interval")
     n_estimators_vals = _unique_sorted(results, "n_estimators")
 
@@ -235,7 +191,6 @@ def plot_learning_curves(
     print(f"Saved -> {out}")
 
 
-# ── Plot 3 & 4: Heatmaps ─────────────────────────────────────────────────────
 
 def plot_heatmap(
     results: list[dict],
@@ -287,10 +242,9 @@ def plot_heatmap(
     print(f"Saved -> {out}")
 
 
-# ── Plot 5: REFIT_INTERVAL comparison ─────────────────────────────────────────
 
 def plot_refit_interval_comparison(results: list[dict]):
-    """All REFIT_INTERVAL values overlaid on one axis, fixing the best N_ESTIMATORS."""
+
     n_estimators_vals = _unique_sorted(results, "n_estimators")
     refit_intervals = _unique_sorted(results, "refit_interval")
 
@@ -334,16 +288,9 @@ def plot_refit_interval_comparison(results: list[dict]):
     print(f"Saved -> {out}")
 
 
-# ── Plot 6: best_q evolution ───────────────────────────────────────────────────
 
 def plot_best_q_evolution(results: list[dict]):
-    """
-    Mean predicted Q(s, greedy action) over training for every config on one
-    axis. The tree-ensemble analogue of linear_agent's w_moves_to_coin plot:
-    there's no single interpretable weight to track, so this tracks the
-    model's own value estimates instead -- it should rise and then stabilize
-    as the ensemble's targets converge across refits.
-    """
+
     refit_intervals = _unique_sorted(results, "refit_interval")
     n_estimators_vals = _unique_sorted(results, "n_estimators")
 
@@ -379,7 +326,7 @@ def plot_best_q_evolution(results: list[dict]):
         ax.grid(axis="y", linestyle="--", alpha=0.35)
 
     fig.suptitle(
-        "Q-value evolution: mean predicted Q(s, greedy action) across hyperparameters",
+
         fontsize=14, y=1.01,
     )
     fig.tight_layout()
@@ -389,7 +336,6 @@ def plot_best_q_evolution(results: list[dict]):
     print(f"Saved -> {out}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -404,7 +350,6 @@ def main():
 
     print(f"\nLoaded {len(results)} configs. Generating plots ...\n")
 
-    # 1. Learning curves: coins collected
     plot_learning_curves(
         results,
         metric="coins",
@@ -415,7 +360,6 @@ def main():
         hline_label=f"Max ({N_COINS_MAX} coins)",
     )
 
-    # 2. Learning curves: sparse reward
     plot_learning_curves(
         results,
         metric="sparse",
@@ -424,7 +368,6 @@ def main():
         fname="learning_curves_reward.png",
     )
 
-    # 3. Heatmap: final coins
     plot_heatmap(
         results,
         value_fn=lambda r: np.mean(r["coins"][-FINAL_WIN:]),
@@ -434,7 +377,6 @@ def main():
         cmap="YlGn",
     )
 
-    # 4. Heatmap: invalid actions
     plot_heatmap(
         results,
         value_fn=lambda r: np.mean(r["invalid"][-FINAL_WIN:]),
@@ -444,10 +386,8 @@ def main():
         cmap="OrRd_r",
     )
 
-    # 5. REFIT_INTERVAL comparison at best N_ESTIMATORS
     plot_refit_interval_comparison(results)
 
-    # 6. best_q evolution
     plot_best_q_evolution(results)
 
     print(f"\nAll plots saved to {OUT_DIR}/")

@@ -1,30 +1,3 @@
-"""
-plot_task4.py -- Task 4 (rule_based_agent) result figures
-================================================================================
-Run from the repo root:
-
-    uv run metrics/tree_agent/task4/plot_task4.py
-
-Reads exclusively from already-saved results/tree_agent/task4/ eval JSONs --
-does not retrain or re-evaluate anything itself.
-
-Produces 3 figures in results/tree_agent/task4/:
-  1. adjacent_opponent_veto_fix.png -- score and suicide rate, before
-                                        (Task 3 collector model, no Task 4
-                                        fix) vs. after (retaliation-aware
-                                        escape + _adjacent_opponent_can_bomb
-                                        veto)
-  2. ffa_comparison.png             -- score, kill rate, suicide rate for
-                                        all four agents in the 4-player
-                                        free-for-all
-  3. regression_check.png           -- score, kill rate, suicide rate of
-                                        the single shipped (rule_based_agent
-                                        -trained) model against all three
-                                        opponents, confirming no regression
-                                        vs. Task 3's dedicated per-opponent
-                                        models
-"""
-
 from __future__ import annotations
 
 import json

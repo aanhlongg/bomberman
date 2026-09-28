@@ -1,22 +1,3 @@
-"""
-plot_task3.py -- Task 3 (peaceful_agent / coin_collector_agent) result figures
-================================================================================
-Run from the repo root:
-
-    uv run metrics/tree_agent/task3/plot_task3.py
-
-Reads exclusively from already-saved results/tree_agent/task3/ eval JSONs and
-the archived per-step training log -- does not retrain anything itself.
-
-Produces 2 figures in results/tree_agent/task3/:
-  1. opponent_potential_scale_fix.png -- coins/round and bombs/round, broken
-                                          (OPPONENT_POTENTIAL_SCALE=1.0) vs.
-                                          fixed (0.2), vs. peaceful_agent
-  2. learning_curve.png               -- smoothed coins/round and kills/round
-                                          over the full 5000-round
-                                          coin_collector_agent training run
-"""
-
 from __future__ import annotations
 
 import json
@@ -74,11 +55,6 @@ def plot_regression_fix():
     fig, axes = plt.subplots(1, 2, figsize=(9, 4.5))
 
     labels = [c[0] for c in configs]
-    # the broken (OPPONENT_POTENTIAL_SCALE=1.0) run collected/bombed exactly
-    # zero, so those keys are absent from its stats dict entirely (the game
-    # engine only includes a key for events that actually occurred) --
-    # .get(..., 0) treats "never happened" and "explicitly zero" the same,
-    # which is exactly the intended reading here.
     coins_per_round = [c[1].get("coins", 0) / c[1]["rounds"] for c in configs]
     bombs_per_round = [c[1].get("bombs", 0) / c[1]["rounds"] for c in configs]
     colors = [c[2] for c in configs]

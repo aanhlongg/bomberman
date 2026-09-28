@@ -1,31 +1,3 @@
-"""
-sweep.py -- Fitted-Q-Iteration hyperparameter sweep for tree_agent's Task 1
-=============================================================================
-Run from anywhere after cloning (self-locating, resolves the repo root from
-its own file path):
-
-    uv run metrics/tree_agent/task1/sweep.py
-
-Mirrors metrics/linear_agent/task1/sweep.py's methodology: vary exactly two
-hyperparameters over a small grid (holding everything else fixed), training
-one fresh model per combination on coin-heaven, and archiving each run's
-per-step training_log.csv for later plotting.
-
-REFIT_INTERVAL (how often the replay buffer gets batch-refit into a fresh
-ExtraTreesRegressor) and N_ESTIMATORS (ensemble size) were chosen as the
-two swept parameters: they're the pair most likely to trade off convergence
-quality against wall-clock cost, mirroring the role alpha/gamma played for
-linear_agent's semi-gradient updates. MIN_SAMPLES_LEAF and FQI_SWEEPS are
-left at train.py's current defaults (5 and 3) throughout.
-
-self.model is always reset to None at the start of any --train run (see
-callbacks.setup()), so no explicit reset between sweep configs is needed --
-each one trains a genuinely fresh model regardless of what tree-model.pt
-currently holds. tree-model.pt itself, and train.py's hyperparameter lines,
-are still saved/restored around the sweep purely so a crash or interruption
-doesn't leave the working tree_agent in a modified state.
-"""
-
 from __future__ import annotations
 
 import re

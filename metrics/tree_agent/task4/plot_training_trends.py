@@ -1,25 +1,3 @@
-"""
-plot_training_trends.py -- training-time trends of tree_agent runs
-====================================================================
-Run from the repo root, e.g. while or after training:
-
-    uv run python metrics/tree_agent/task4/plot_training_trends.py \
-        --run "seed 1=agent_code/tree_ab_L1" --run "seed 2=agent_code/tree_ab_L2" \
-        --out results/tree_agent/task4/training_trends.png
-
-Reads, per run, the agent's own per-step metrics/training_log.csv (our score
-delta per step: +1 coin, +5 kill) and tracked_bomb_log.jsonl (own-bomb
-deaths), and renders three panels over training rounds: our score per round,
-own-bomb death rate, and round length -- each as a rolling mean over WINDOW
-rounds.
-
-Read with care: these are TRAINING-TIME numbers under epsilon-greedy
-exploration (epsilon floor 0.05 from round ~1,000). A decline here is real
-(a policy collapse shows up as the score sinking to what exploration alone
-earns); a plateau here does NOT certify a greedy plateau -- for that, evaluate
-checkpoints pure-greedy (select_checkpoint.py).
-"""
-
 import argparse
 import json
 from pathlib import Path
@@ -52,7 +30,6 @@ def load_run(agent_dir: Path):
             if not rec.get("survived", True) and rec["round"] in deaths.index:
                 deaths[rec["round"]] = 1.0
     per_round["own_death"] = deaths
-    # the final round may be partial while training is still running
     return per_round.iloc[:-1] if len(per_round) > 1 else per_round
 
 

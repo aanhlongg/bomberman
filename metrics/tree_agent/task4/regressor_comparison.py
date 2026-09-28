@@ -1,37 +1,3 @@
-"""
-regressor_comparison.py -- ExtraTrees vs gradient boosting on identical FQI data
-=================================================================================
-Would swapping tree_agent's ExtraTreesRegressor for gradient-boosted trees help?
-The theoretical argument cuts both ways (lower bias separates near-tied actions;
-but Fitted Q-Iteration's max-target is optimistically biased, and an averaging
-regressor damps that bias every sweep where a booster fits it faithfully), so
-this script measures it offline on one fixed replay buffer instead of guessing:
-
-  1. Bellman targets exactly as train.fitted_q_iteration builds them, off the
-     shipped model: T = r + GAMMA * max_a Q(s', a) (0 for terminal).
-  2. Every candidate regressor is fit on the same 80% split and scored on the
-     held-out 20%: RMSE on the targets.
-  3. Argmax agreement with the shipped ExtraTrees over the six action rows of
-     each held-out next state, and the distribution of the ACTION GAP
-     Q(best) - Q(second best) -- the quantity whose near-ties caused every
-     traced failure of this agent.
-  4. Q-inflation: N sweeps of Fitted Q-Iteration on the fixed buffer with each
-     regressor, from the raw-reward fit, recording mean and max predicted Q per
-     sweep. Saturating = stable; growing without bound = the booster is
-     fitting the max-bias (a no-go regardless of how sharp its gaps are).
-  5. Fit time, and predict time for one 6-row call (the per-step cost during
-     play must stay far below settings.TIMEOUT).
-
-Data: a replay buffer pickled by train.py when REPLAY_DUMP_PATH is set, e.g.
-collected for 250 rounds vs rule_based_agent from the shipped model with
-TREE_AGENT_INIT_MODEL=<tree-model.pt> TREE_AGENT_EPSILON=0.05 (so the states
-are the trained policy's, not round-1 random exploration).
-
-Usage (from the repo root):
-    uv run python metrics/tree_agent/task4/regressor_comparison.py --replay <replay.pkl> \
-        --model agent_code/tree_agent/tree-model.pt --out results/tree_agent/task4/regressor_comparison.png
-"""
-
 import argparse
 import pickle
 import sys
@@ -43,8 +9,8 @@ import numpy as np
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from agent_code.tree_agent import train as T  # noqa: E402
-from agent_code.tree_agent.features import ACTIONS, GAMMA, N_FEATURES  # noqa: E402
+from agent_code.tree_agent import train as T
+from agent_code.tree_agent.features import ACTIONS, GAMMA, N_FEATURES
 
 BLUE, ORANGE, AQUA, YELLOW, MAGENTA = "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"
 INK, INK_2, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#8a8985", "#e6e5e1", "#fcfcfb"
@@ -56,14 +22,12 @@ plt.rcParams.update({
     "grid.color": GRID, "grid.linewidth": 0.6, "axes.axisbelow": True,
 })
 
-# Monotone priors over the hand-crafted features (index: see features.py's
-# layout comment). +1: Q non-decreasing in the feature, -1: non-increasing.
 MONOTONE = np.zeros(N_FEATURES, dtype=int)
-MONOTONE[4] = -1   # moves_into_avoidable_danger
-MONOTONE[5] = +1   # escape_exists_if_bomb
-MONOTONE[6] = +1   # crate_count_if_bomb
-MONOTONE[11] = -1  # target_distance_after
-MONOTONE[13] = +1  # yield_at_landing_tile
+MONOTONE[4] = -1
+MONOTONE[5] = +1
+MONOTONE[6] = +1
+MONOTONE[11] = -1
+MONOTONE[13] = +1
 
 
 def candidates(seed):
@@ -112,7 +76,7 @@ def main():
     rng = np.random.default_rng(a.seed)
     idx = rng.permutation(n); cut = int(0.8 * n); tr, te = idx[:cut], idx[cut:]
     targets = bellman_targets(shipped, rewards, next_phis, done)
-    live = te[~done[te]]  # held-out non-terminal transitions: their next states are real
+    live = te[~done[te]]
     print(f"buffer: {n:,} transitions ({done.sum()} terminal), {len(tr):,} train / {len(te):,} held out; "
           f"targets mean {targets.mean():.2f} sd {targets.std():.2f}\n")
 
@@ -134,7 +98,6 @@ def main():
         print(f"{name:30} {rmse:7.3f} {agree:13.1%} {np.median(gap):11.2f} {np.mean(gap < 0.5):8.1%} {fit_s:7.1f} {pred_ms:11.2f}")
     print(f"{'(shipped model itself)':30} {'':>7} {'':>13} {np.median(ship_gap):11.2f} {np.mean(ship_gap < 0.5):8.1%}")
 
-    # Q-inflation: repeated sweeps on the fixed buffer from the raw-reward fit
     print(f"\nQ-inflation over {a.sweeps} FQI sweeps (mean / max predicted Q on the buffer):")
     inflation = {}
     for name, make in candidates(a.seed).items():
@@ -146,10 +109,8 @@ def main():
         inflation[name] = (means, maxes)
         print(f"  {name:30} mean: {' '.join(f'{v:6.1f}' for v in means)}")
         print(f"  {'':30} max : {' '.join(f'{v:6.1f}' for v in maxes)}")
-    # the fixed point of the (unshaped) return for a constant reward r is r/(1-GAMMA): with mean reward
     print(f"  reference: mean reward {rewards.mean():.2f} -> r/(1-gamma) = {rewards.mean()/(1-GAMMA):.1f}")
 
-    # figure
     names = list(results); colors = [MUTED, BLUE, ORANGE, AQUA]
     fig, axes = plt.subplots(2, 2, figsize=(10, 7.2))
     ax = axes[0, 0]

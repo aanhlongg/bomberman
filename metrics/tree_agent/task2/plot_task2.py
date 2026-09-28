@@ -1,18 +1,3 @@
-"""
-plot_task2.py -- Task 2 diagnostic figure for report_tree_task2_body.typ
-=========================================================================
-Run from the repo root:
-
-    python metrics/tree_agent/task2/plot_task2.py
-
-Reads the 200-round pure-greedy evaluation JSONs already saved under
-results/tree_agent/task2/ across the crate-count-reward investigation and
-produces one figure:
-
-  config_comparison_bar.png -- coins/round summary bar chart across the
-                                EXTRA_CRATE_BONUS ablation sequence
-"""
-
 import json
 from pathlib import Path
 
