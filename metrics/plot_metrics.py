@@ -49,7 +49,7 @@ def evaluate(agent, scenario, n_rounds, stats_path, model_path=None, quiet=False
     """
     env = dict(os.environ)
     if model_path:
-        env["LINEAR_AGENT_MODEL"] = model_path
+        env["LINEAR_AGENT_MODEL"] = os.path.abspath(model_path)
 
     output = subprocess.DEVNULL if quiet else None
     subprocess.run(

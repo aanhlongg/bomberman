@@ -120,3 +120,5 @@ results/
 *~
 \#*\#
 .\#*
+# training artefacts
+agent_code/*/metrics/

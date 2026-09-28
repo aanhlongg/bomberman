@@ -1,33 +1,60 @@
 <div align="center">
     <h1> Reinforcement Learning Agents in Bomberman </h1>
-    <h3></h3>
 </div>
 
-## Linear agent: Task 1 (coin-heaven)
+### Requirements
 
-train the linear agent:
+Requires [uv](https://docs.astral.sh/uv/).
+
+<details>
+<summary><h2>Linear agent (<code>linear_agent</code>)</h2></summary>
+
+Produces a single shipped model `agent_code/linear_agent/linear-model.pt` which is used for all four tasks.
+
+### Train
+
+Training starts from zero weights and writes a checkpoint every 100 rounds to
+`agent_code/linear_agent/metrics/checkpoints/`.
+
 ```bash
+# task 1: coin-heaven
 uv run main.py play --agents linear_agent --train 1 --scenario coin-heaven --no-gui --n-rounds 1000
+
+# task 2: loot-crate
+uv run main.py play --agents linear_agent --train 1 --scenario loot-crate --no-gui --n-rounds 1500
+
+# tasks 3 and 4: the shipped model was trained with this command
+uv run main.py play --agents linear_agent peaceful_agent coin_collector_agent --train 1 --scenario classic --no-gui --n-rounds 1500
 ```
 
-evaluate the linear agent:
+### Choose the checkpoint
+
+Training does not converge, so the model is selected from the checkpoints rather
+than taken from the end of the run. The `linear-model.pt` that training itself
+writes is a running weight average and should not be used.
+
 ```bash
-uv run main.py play --agents linear_agent --scenario coin-heaven # single run 
-# plot training and evaluate 200 rounds
-uv run metrics/plot_metrics.py agent_code/linear_agent/metrics/training_log.csv --agent linear_agent --scenario coin-heaven --eval-rounds 200 --title "Linear agent - Task 1"
+# evaluates every checkpoint and prints the best one with the command to install it
+uv run metrics/sweep_checkpoints.py --scenario coin-heaven --jobs 8                                      # task 1
+uv run metrics/sweep_checkpoints.py --scenario loot-crate --jobs 8                                       # task 2
+uv run metrics/sweep_checkpoints.py --opponents peaceful_agent coin_collector_agent --jobs 8             # tasks 3 and 4
+
+# then install the round it names, e.g.
+cp agent_code/linear_agent/metrics/checkpoints/weights_600.pt agent_code/linear_agent/linear-model.pt
 ```
 
-## Linear agent: Task 2 (loot-crate)
+### Evaluate
 
-train the linear agent:
+Loads `linear-model.pt` and plays greedily, without exploration or training.
+
 ```bash
-# training will average the weight vector starting at round 1000
-uv run main.py play --agents linear_agent --train 1 --scenario loot-crate --no-gui --n-rounds 3000
+uv run metrics/evaluate_model.py --agent linear_agent --scenario coin-heaven --n-rounds 200               # task 1
+uv run metrics/evaluate_model.py --agent linear_agent --scenario loot-crate --n-rounds 200                # task 2
+uv run metrics/evaluate_task3.py --opponents peaceful_agent coin_collector_agent --n-rounds 200           # task 3
+uv run metrics/evaluate_task3.py --opponents rule_based_agent --n-rounds 200                             # task 4
+
+# watch a single round in the GUI
+uv run main.py play --agents linear_agent rule_based_agent --scenario classic
 ```
 
-evaluate the linear agent:
-```bash
-uv run main.py play --agents linear_agent --scenario loot-crate  # single run 
-# plot training and evaluate 500 rounds
-uv run metrics/plot_metrics.py agent_code/linear_agent/metrics/training_log.csv --agent linear_agent --scenario loot-crate --eval-rounds 500 --title "Linear agent - Task 2"
-```
+</details>
