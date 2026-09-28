@@ -23,7 +23,7 @@ def evaluate(agent, opponents, scenario, n_rounds, model_path=None, seed=None):
 
     env = dict(os.environ)
     if model_path:
-        env["LINEAR_AGENT_MODEL"] = os.path.abspath(model_path)
+        env["LINEAR_AGENT_MODEL"] = env["TREE_AGENT_MODEL_PATH"] = os.path.abspath(model_path)
 
     command = [
         sys.executable, "main.py", "play",

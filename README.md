@@ -58,3 +58,40 @@ uv run main.py play --agents linear_agent rule_based_agent --scenario classic
 ```
 
 </details>
+
+<details>
+<summary><h2>Tree agent (<code>tree_agent</code>)</h2></summary>
+
+Produces a single shipped model `agent_code/tree_agent/tree-model.pt` which is used for all four tasks.
+
+### Train
+
+Training starts from scratch and refits the model every 25 rounds, overwriting
+`agent_code/tree_agent/tree-model.pt` each time, so back up the shipped model first.
+The model from the final refit is the one that ships. A 5000-round run takes about
+1.5 hours, and separate runs vary a lot in strength, so the shipped model is the best
+of several runs.
+
+```bash
+# back up the shipped model
+cp agent_code/tree_agent/tree-model.pt agent_code/tree_agent/tree-model.shipped.pt
+
+# all four tasks: the shipped model was trained with this command
+uv run main.py play --agents tree_agent rule_based_agent --train 1 --scenario classic --no-gui --n-rounds 5000
+```
+
+### Evaluate
+
+Loads `tree-model.pt` and plays greedily, without exploration or training.
+
+```bash
+uv run metrics/evaluate_model.py --agent tree_agent --scenario coin-heaven --n-rounds 200                               # task 1
+uv run metrics/evaluate_model.py --agent tree_agent --scenario loot-crate --n-rounds 200                                # task 2
+uv run metrics/evaluate_task3.py --agent tree_agent --opponents peaceful_agent coin_collector_agent --n-rounds 200      # task 3
+uv run metrics/evaluate_task3.py --agent tree_agent --opponents rule_based_agent --n-rounds 200                        # task 4
+
+# watch a single round in the GUI
+uv run main.py play --agents tree_agent rule_based_agent --scenario classic
+```
+
+</details>

@@ -122,3 +122,5 @@ results/
 .\#*
 # training artefacts
 agent_code/*/metrics/
+agent_code/*/checkpoints/
+agent_code/*/tracked_bomb_log*.jsonl
